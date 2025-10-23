@@ -114,53 +114,66 @@ def create_interactive_plot(df_analysis):
         st.error("No se pudieron cargar los datos reales de las curvas IV")
         return None
     
-    # Crear subplots
-    fig = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=('Curvas I-V Reales', 'Curvas P-V Reales'),
-        specs=[[{"secondary_y": False}, {"secondary_y": False}]]
-    )
-    
-    # Agregar curvas reales
+    # Separar curvas por tipo de módulo
+    grouped_curves = {
+        'Minimódulo': [],
+        'Módulo Risen': []
+    }
     for curve in real_curves:
-        iv_data = curve['iv_data']
-        voltage = iv_data[:, 0]
-        current = iv_data[:, 1]
-        power = iv_data[:, 2]
-        
-        name = f"{curve['module_category']} {curve['time']}"
-        
-        # Curva I-V
-        fig.add_trace(
-            go.Scatter(
-                x=voltage, y=current,
-                mode='lines',
-                name=name,
-                line=dict(color=curve['color'], width=2),
-                hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Corriente: %{{y:.2f}} A<extra></extra>'
-            ),
-            row=1, col=1
+        grouped_curves[curve['module_category']].append(curve)
+
+    for module_type, curves in grouped_curves.items():
+        if not curves:
+            st.warning(f"No hay curvas para el tipo de módulo: {module_type}")
+            continue
+
+        st.subheader(f"Curvas {module_type}")
+
+        # Crear subplots
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=(f"Curvas I-V -{module_type}", f"Curvas P-V -{module_type}"),
+            specs=[[{"secondary_y": False}, {"secondary_y": False}]]
         )
+
+        for curve in curves:
+            iv_data = curve['iv_data']
+            voltage = iv_data[:, 0]
+            current = iv_data[:, 1]
+            power = iv_data[:, 2]
+            name = f"{module_type} {curve['time']}"
+            
+            # Curva I-V
+            fig.add_trace(
+                go.Scatter(
+                    x=voltage, y=current,
+                    mode='lines',
+                    name=name,
+                    line=dict(color=curve['color'], width=2),
+                    hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Corriente: %{{y:.2f}} A<extra></extra>'
+                ),
+                row=1, col=1
+            )
         
-        # Curva P-V
-        fig.add_trace(
-            go.Scatter(
-                x=voltage, y=power,
-                mode='lines',
-                name=name,
-                line=dict(color=curve['color'], width=2),
-                hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Potencia: %{{y:.2f}} W<extra></extra>',
-                showlegend=False
-            ),
-            row=1, col=2
-        )
+            # Curva P-V
+            fig.add_trace(
+                go.Scatter(
+                    x=voltage, y=power,
+                    mode='lines',
+                    name=name,
+                    line=dict(color=curve['color'], width=2),
+                    hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Potencia: %{{y:.2f}} W<extra></extra>',
+                    showlegend=False
+                ),
+                row=1, col=2
+            )
     
     # Actualizar layout
     fig.update_layout(
-        title_text="Análisis de Curvas IV - PVStand (Datos Reales)",
-        title_x=0.5,
         height=600,
         showlegend=True,
+        title_text=f"Curvas IV/PV - PVStand - {module_type}",
+        title_x=0.5,
         legend=dict(
             orientation="v",
             yanchor="top",
@@ -253,12 +266,8 @@ def main():
             minimodule_count = len([c for c in real_curves if c['module_category'] == 'Minimódulo'])
             st.metric("🔴 Curvas Minimódulo", minimodule_count)
     
-    fig = create_interactive_plot(df_analysis)
-    if fig:
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.error("No se pudieron cargar las curvas reales")
-    
+    create_interactive_plot(df_analysis)
+
     # Tabla de datos
     st.header("📋 Datos del Análisis")
     
