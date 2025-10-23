@@ -292,39 +292,46 @@ def main():
 
     corrected_curves = load_corrected_curves()
 
-    if corrected_curves:
-        fig_corr = go.Figure()
+if corrected_curves:
+    fig_corr = go.Figure()
 
-        for df in corrected_curves:
-            name = df["Archivo"].iloc[0].replace("_corregida.csv", "")
+    for df in corrected_curves:
+        name = df["Archivo"].iloc[0].removesuffix("_corregida.csv")
 
-            # Curva original
-            fig_corr.add_trace(go.Scatter(
-                x=df["V"], y=df["I"],
-                mode='lines',
-                name=f"{name} - Original",
-                line=dict(dash="solid")
-            ))
+        # Curva original - línea sólida
+        fig_corr.add_trace(go.Scatter(
+            x=df["V"], y=df["I"],
+            mode='lines',
+            name=f"{name} - Original",
+            line=dict(dash="solid", width=2)
+        ))
 
-            # Curva corregida
-            fig_corr.add_trace(go.Scatter(
-                x=df["V_STC"], y=df["I_STC"],
-                mode='lines',
-                name=f"{name} - Corregida STC",
-                line=dict(dash="dash")
-            ))
+        # Curva corregida STC - línea punteada
+        fig_corr.add_trace(go.Scatter(
+            x=df["V_STC"], y=df["I_STC"],
+            mode='lines',
+            name=f"{name} - Corregida STC",
+            line=dict(dash="dash", width=2)
+        ))
 
-        fig_corr.update_layout(
-            title="Comparación de Curvas IV (Original vs Corregida a STC)",
-            xaxis_title="Voltaje (V)",
-            yaxis_title="Corriente (A)",
-            height=600,
-            showlegend=True
+    fig_corr.update_layout(
+        title="📊 Comparación de Curvas IV (Original vs Corregida a STC)",
+        xaxis_title="Voltaje (V)",
+        yaxis_title="Corriente (A)",
+        height=600,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02
         )
+    )
 
-        st.plotly_chart(fig_corr, use_container_width=True)
-    else:
-        st.warning("No se encontraron curvas corregidas a STC.")
+    st.plotly_chart(fig_corr, width="stretch")
+else:
+    st.warning("⚠️ No se encontraron curvas corregidas a STC.")
+
 
     
     # Tabla de datos
