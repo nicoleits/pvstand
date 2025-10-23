@@ -401,15 +401,33 @@ def main():
         vmp = df["V_STC"].iloc[pmax_idx]
         imp = df["I_STC"].iloc[pmax_idx]
 
+        # Estimar Voc: máximo V donde I ≈ 0
+        voc_candidates = df[df["I_STC"] <= 0.05]  # Umbral tolerante
+        voc = voc_candidates["V_STC"].max() if not voc_candidates.empty else np.nan
+
+        # Estimar Isc: máximo I donde V ≈ 0
+        isc_candidates = df[df["V_STC"] <= 0.05]
+        isc = isc_candidates["I_STC"].max() if not isc_candidates.empty else np.nan
+
+        # Calcular FF si es posible
+        if voc and isc and voc > 0 and isc > 0:
+            ff = pmax / (voc * isc)
+        else:
+            ff = np.nan
+
         param_rows.append({
             "Archivo": name,
             "Pmax (W)": round(pmax, 2),
             "Vmp (V)": round(vmp, 2),
-            "Imp (A)": round(imp, 2)
+            "Imp (A)": round(imp, 2),
+            "Voc (V)": round(voc, 2) if not np.isnan(voc) else "-",
+            "Isc (A)": round(isc, 2) if not np.isnan(isc) else "-",
+            "FF": round(ff, 3) if not np.isnan(ff) else "-"
         })
 
     df_params = pd.DataFrame(param_rows)
     st.dataframe(df_params, use_container_width=True)
+
 
 if __name__ == "__main__":
     main()
