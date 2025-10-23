@@ -79,19 +79,8 @@ def load_real_iv_data():
                                     continue
                     
                     if iv_data:
-                        st.write(f"Archivo: {filename}")
-                        st.write(f"Hora: {time_str} → {module_category}")
-                        st.write(f"Puntos IV: {len(iv_data)}")
-
-                        st.write(iv_data)
-
                         # Determinar tipo de módulo por hora
-                        try:
-                            st.write(f"Primera línea: {lines[1]}")
-                            time_str = lines[1].split('\t')[1].strip()
-                        except Exception as e:
-                            st.warning(f"No se pudo extraer hora de {filename}: {e}")
-                            time_str = ""
+                        time_str = lines[1].split('\t')[1] if len(lines) > 1 else ""
                         if time_str >= "14:30:00" and time_str <= "15:05:00":
                             module_category = "Minimódulo"
                             color = "red"
@@ -116,82 +105,78 @@ def load_real_iv_data():
         return None
 
 def create_interactive_plot(df_analysis):
-    """Crea gráficos separados para Risen y Minimódulo"""
-
-    # Cargar datos reales
+    """Crea el gráfico interactivo con plotly usando datos reales"""
+    
+    # Cargar datos reales de curvas IV
     real_curves = load_real_iv_data()
-
+    
     if not real_curves:
         st.error("No se pudieron cargar los datos reales de las curvas IV")
-        return
-
-    # Separar curvas por tipo
-    grouped_curves = {
-        'Minimódulo': [],
-        'Módulo Risen': []
-    }
-
+        return None
+    
+    # Crear subplots
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=('Curvas I-V', 'Curvas P-V'),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}]]
+    )
+    
+    # Agregar curvas reales
     for curve in real_curves:
-        grouped_curves[curve['module_category']].append(curve)
-
-    for module_type, curves in grouped_curves.items():
-        if not curves:
-            st.warning(f"No hay curvas para el tipo de módulo: {module_type}")
-            continue
-
-        st.subheader(f"📉 Curvas del {module_type}")
-
-        fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=(f"Curvas I-V - {module_type}", f"Curvas P-V - {module_type}")
+        iv_data = curve['iv_data']
+        voltage = iv_data[:, 0]
+        current = iv_data[:, 1]
+        power = iv_data[:, 2]
+        
+        name = f"{curve['module_category']} {curve['time']}"
+        
+        # Curva I-V
+        fig.add_trace(
+            go.Scatter(
+                x=voltage, y=current,
+                mode='lines',
+                name=name,
+                line=dict(color=curve['color'], width=2),
+                hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Corriente: %{{y:.2f}} A<extra></extra>'
+            ),
+            row=1, col=1
         )
-
-        for curve in curves:
-            iv_data = curve['iv_data']
-            voltage = iv_data[:, 0]
-            current = iv_data[:, 1]
-            power = iv_data[:, 2]
-            name = f"{module_type} {curve['time']}"
-
-            # Curva I-V
-            fig.add_trace(
-                go.Scatter(
-                    x=voltage, y=current,
-                    mode='lines',
-                    name=name,
-                    line=dict(color=curve['color'], width=2),
-                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>I: %{{y:.2f}} A<extra></extra>'
-                ),
-                row=1, col=1
-            )
-
-            # Curva P-V
-            fig.add_trace(
-                go.Scatter(
-                    x=voltage, y=power,
-                    mode='lines',
-                    name=name,
-                    line=dict(color=curve['color'], width=2),
-                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>P: %{{y:.2f}} W<extra></extra>',
-                    showlegend=False
-                ),
-                row=1, col=2
-            )
-
-        # Layout
-        fig.update_layout(
-            height=600,
-            showlegend=True,
-            title_text=f"Curvas IV y PV - {module_type}",
-            title_x=0.5
+        
+        # Curva P-V
+        fig.add_trace(
+            go.Scatter(
+                x=voltage, y=power,
+                mode='lines',
+                name=name,
+                line=dict(color=curve['color'], width=2),
+                hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Potencia: %{{y:.2f}} W<extra></extra>',
+                showlegend=False
+            ),
+            row=1, col=2
         )
-        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
-        fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
-        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
-        fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
-
-        # Mostrar gráfico
-        st.plotly_chart(fig, width='stretch')
+    
+    # Actualizar layout
+    fig.update_layout(
+        title_text="Análisis de Curvas IV - PVStand (Datos Reales)",
+        title_x=0.5,
+        height=600,
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02
+        )
+    )
+    
+    # Actualizar ejes
+    fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
+    fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
+    fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
+    fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
+    
+    return fig
 
 def main():
     """Función principal de la aplicación"""
@@ -268,8 +253,11 @@ def main():
             minimodule_count = len([c for c in real_curves if c['module_category'] == 'Minimódulo'])
             st.metric("🔴 Curvas Minimódulo", minimodule_count)
     
-    create_interactive_plot(df_analysis)
-
+    fig = create_interactive_plot(df_analysis)
+    if fig:
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.error("No se pudieron cargar las curvas reales")
     
     # Tabla de datos
     st.header("📋 Datos del Análisis")
