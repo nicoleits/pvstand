@@ -277,11 +277,8 @@ def main():
             minimodule_count = len([c for c in real_curves if c['module_category'] == 'Minimódulo'])
             st.metric("🔴 Curvas Minimódulo", minimodule_count)
     
-    fig = create_interactive_plot(df_analysis)
-    if fig:
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.error("No se pudieron cargar las curvas reales")
+    create_interactive_plot(df_analysis)
+
     
     # Tabla de datos
     st.header("📋 Datos del Análisis")
