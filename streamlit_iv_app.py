@@ -105,78 +105,92 @@ def load_real_iv_data():
         return None
 
 def create_interactive_plot(df_analysis):
-    """Crea el gráfico interactivo con plotly usando datos reales"""
-    
-    # Cargar datos reales de curvas IV
+    """Crea gráficos separados para Módulo Risen y Minimódulo"""
+
     real_curves = load_real_iv_data()
     
     if not real_curves:
         st.error("No se pudieron cargar los datos reales de las curvas IV")
-        return None
+        return
     
-    # Crear subplots
-    fig = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=('Curvas I-V', 'Curvas P-V'),
-        specs=[[{"secondary_y": False}, {"secondary_y": False}]]
-    )
+    # Agrupar curvas por tipo
+    grouped_curves = {
+        "Módulo Risen": [],
+        "Minimódulo": []
+    }
     
-    # Agregar curvas reales
     for curve in real_curves:
-        iv_data = curve['iv_data']
-        voltage = iv_data[:, 0]
-        current = iv_data[:, 1]
-        power = iv_data[:, 2]
+        grouped_curves[curve['module_category']].append(curve)
+    
+    for module_type, curves in grouped_curves.items():
+        if not curves:
+            st.warning(f"No se encontraron curvas para {module_type}")
+            continue
         
-        name = f"{curve['module_category']} {curve['time']}"
-        
-        # Curva I-V
-        fig.add_trace(
-            go.Scatter(
-                x=voltage, y=current,
-                mode='lines',
-                name=name,
-                line=dict(color=curve['color'], width=2),
-                hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Corriente: %{{y:.2f}} A<extra></extra>'
-            ),
-            row=1, col=1
+        st.subheader(f"🔍 {module_type}")
+
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=(f"Curvas I-V - {module_type}", f"Curvas P-V - {module_type}"),
+            specs=[[{"secondary_y": False}, {"secondary_y": False}]]
         )
         
-        # Curva P-V
-        fig.add_trace(
-            go.Scatter(
-                x=voltage, y=power,
-                mode='lines',
-                name=name,
-                line=dict(color=curve['color'], width=2),
-                hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Potencia: %{{y:.2f}} W<extra></extra>',
-                showlegend=False
-            ),
-            row=1, col=2
+        for curve in curves:
+            iv_data = curve['iv_data']
+            voltage = iv_data[:, 0]
+            current = iv_data[:, 1]
+            power = iv_data[:, 2]
+            
+            name = f"{curve['time']}"
+
+            # IV
+            fig.add_trace(
+                go.Scatter(
+                    x=voltage, y=current,
+                    mode='lines',
+                    name=name,
+                    line=dict(color=curve['color'], width=2),
+                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>I: %{{y:.2f}} A<extra></extra>'
+                ),
+                row=1, col=1
+            )
+            
+            # PV
+            fig.add_trace(
+                go.Scatter(
+                    x=voltage, y=power,
+                    mode='lines',
+                    name=name,
+                    line=dict(color=curve['color'], width=2),
+                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>P: %{{y:.2f}} W<extra></extra>',
+                    showlegend=False
+                ),
+                row=1, col=2
+            )
+
+        # Layout
+        fig.update_layout(
+            height=500,
+            showlegend=True,
+            margin=dict(t=60),
+            title_text=f"{module_type} - Curvas IV y PV",
+            title_x=0.5,
+            legend=dict(
+                orientation="v",
+                yanchor="top",
+                y=1,
+                xanchor="left",
+                x=1.02
+            )
         )
-    
-    # Actualizar layout
-    fig.update_layout(
-        title_text="Análisis de Curvas IV - PVStand (Datos Reales)",
-        title_x=0.5,
-        height=600,
-        showlegend=True,
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02
-        )
-    )
-    
-    # Actualizar ejes
-    fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
-    fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
-    fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
-    fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
-    
-    return fig
+        
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
+        fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
+        fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
+
+        st.plotly_chart(fig, use_container_width=True)
+
 
 def main():
     """Función principal de la aplicación"""
