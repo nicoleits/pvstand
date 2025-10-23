@@ -189,7 +189,7 @@ def create_interactive_plot(df_analysis):
     fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
     fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
     
-    return fig
+    st.plotly_chart(fig, use_container_width=True)
 
 def main():
     """Función principal de la aplicación"""
