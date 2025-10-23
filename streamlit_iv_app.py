@@ -81,7 +81,7 @@ def load_real_iv_data():
                     if iv_data:
                         # Determinar tipo de módulo por hora
                         time_str = lines[1].split('\t')[1] if len(lines) > 1 else ""
-                        if time_str >= "14:30:00" and time_str <= "15:00:00":
+                        if time_str >= "14:30:00" and time_str <= "15:05:00":
                             module_category = "Minimódulo"
                             color = "red"
                         else:
