@@ -13,12 +13,8 @@ import sys
 import glob
 
 # Agregar el directorio raíz del proyecto al path de Python
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(project_root)
-
-corrected_dir = os.path.join(project_root, "pvstand", "resultados_correccion")
-st.info(f"🔍 Buscando archivos corregidos en: {corrected_dir}")
-
 
 from pvstand.analysis.pvstand_iv_processor import process_pvstand_iv_files
 
