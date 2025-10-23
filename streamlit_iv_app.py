@@ -79,8 +79,19 @@ def load_real_iv_data():
                                     continue
                     
                     if iv_data:
+                        st.write(f"Archivo: {filename}")
+                        st.write(f"Hora: {time_str} → {module_category}")
+                        st.write(f"Puntos IV: {len(iv_data)}")
+
+                        st.write(iv_data)
+
                         # Determinar tipo de módulo por hora
-                        time_str = lines[1].split('\t')[1] if len(lines) > 1 else ""
+                        try:
+                            st.write(f"Primera línea: {lines[1]}")
+                            time_str = lines[1].split('\t')[1].strip()
+                        except Exception as e:
+                            st.warning(f"No se pudo extraer hora de {filename}: {e}")
+                            time_str = ""
                         if time_str >= "14:30:00" and time_str <= "15:05:00":
                             module_category = "Minimódulo"
                             color = "red"
