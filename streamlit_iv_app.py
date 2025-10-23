@@ -116,20 +116,21 @@ def load_real_iv_data():
         return None
 
 def create_interactive_plot(df_analysis):
-    """Crea el gráfico interactivo con plotly usando datos reales"""
-    
-    # Cargar datos reales de curvas IV
+    """Crea gráficos separados para Risen y Minimódulo"""
+
+    # Cargar datos reales
     real_curves = load_real_iv_data()
-    
+
     if not real_curves:
         st.error("No se pudieron cargar los datos reales de las curvas IV")
-        return None
-    
-    # Separar curvas por tipo de módulo
+        return
+
+    # Separar curvas por tipo
     grouped_curves = {
         'Minimódulo': [],
         'Módulo Risen': []
     }
+
     for curve in real_curves:
         grouped_curves[curve['module_category']].append(curve)
 
@@ -138,13 +139,11 @@ def create_interactive_plot(df_analysis):
             st.warning(f"No hay curvas para el tipo de módulo: {module_type}")
             continue
 
-        st.subheader(f"Curvas {module_type}")
+        st.subheader(f"📉 Curvas del {module_type}")
 
-        # Crear subplots
         fig = make_subplots(
             rows=1, cols=2,
-            subplot_titles=(f"Curvas I-V -{module_type}", f"Curvas P-V -{module_type}"),
-            specs=[[{"secondary_y": False}, {"secondary_y": False}]]
+            subplot_titles=(f"Curvas I-V - {module_type}", f"Curvas P-V - {module_type}")
         )
 
         for curve in curves:
@@ -153,7 +152,7 @@ def create_interactive_plot(df_analysis):
             current = iv_data[:, 1]
             power = iv_data[:, 2]
             name = f"{module_type} {curve['time']}"
-            
+
             # Curva I-V
             fig.add_trace(
                 go.Scatter(
@@ -161,11 +160,11 @@ def create_interactive_plot(df_analysis):
                     mode='lines',
                     name=name,
                     line=dict(color=curve['color'], width=2),
-                    hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Corriente: %{{y:.2f}} A<extra></extra>'
+                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>I: %{{y:.2f}} A<extra></extra>'
                 ),
                 row=1, col=1
             )
-        
+
             # Curva P-V
             fig.add_trace(
                 go.Scatter(
@@ -173,34 +172,26 @@ def create_interactive_plot(df_analysis):
                     mode='lines',
                     name=name,
                     line=dict(color=curve['color'], width=2),
-                    hovertemplate=f'<b>{name}</b><br>Voltaje: %{{x:.2f}} V<br>Potencia: %{{y:.2f}} W<extra></extra>',
+                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>P: %{{y:.2f}} W<extra></extra>',
                     showlegend=False
                 ),
                 row=1, col=2
             )
-    
-    # Actualizar layout
-    fig.update_layout(
-        height=600,
-        showlegend=True,
-        title_text=f"Curvas IV/PV - PVStand - {module_type}",
-        title_x=0.5,
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02
+
+        # Layout
+        fig.update_layout(
+            height=600,
+            showlegend=True,
+            title_text=f"Curvas IV y PV - {module_type}",
+            title_x=0.5
         )
-    )
-    
-    # Actualizar ejes
-    fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
-    fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
-    fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
-    fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
-    
-    st.plotly_chart(fig, width="stretch")
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
+        fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
+        fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
+
+        # Mostrar gráfico
+        st.plotly_chart(fig, width='stretch')
 
 def main():
     """Función principal de la aplicación"""
