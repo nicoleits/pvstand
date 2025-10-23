@@ -14,7 +14,7 @@ def main():
     print("")
     
     # Cambiar al directorio del proyecto
-    os.chdir('/home/nicole/atamo_pvstand')
+    #os.chdir('/home/nicole/atamo_pvstand')
     
     # Ejecutar Streamlit con configuración automática
     try:
