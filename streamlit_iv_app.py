@@ -10,12 +10,32 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 import sys
+import glob
 
 # Agregar el directorio raíz del proyecto al path de Python
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(project_root)
 
 from pvstand.analysis.pvstand_iv_processor import process_pvstand_iv_files
+
+def load_corrected_curves():
+    """Carga las curvas corregidas a STC"""
+    corrected_dir = os.path.join(project_root, "pvstand", "resultados_correccion")
+    pattern = os.path.join(corrected_dir, "*_corregida.csv")
+    corrected_files = glob.glob(pattern)
+
+    curves = []
+    for filepath in corrected_files:
+        try:
+            df = pd.read_csv(filepath)
+            df["Archivo"] = os.path.basename(filepath)
+            curves.append(df)
+        except Exception as e:
+            st.warning(f"Error leyendo archivo corregido: {filepath}")
+            continue
+
+    return curves
+
 
 def load_iv_data():
     """Carga los datos de curvas IV"""
@@ -268,6 +288,43 @@ def main():
             st.metric("🔴 Curvas Minimódulo", minimodule_count)
     
     create_interactive_plot(df_analysis)
+    st.header("⚙️ Curvas IV Corregidas a STC")
+
+    corrected_curves = load_corrected_curves()
+
+    if corrected_curves:
+        fig_corr = go.Figure()
+
+        for df in corrected_curves:
+            name = df["Archivo"].iloc[0].replace("_corregida.csv", "")
+
+            # Curva original
+            fig_corr.add_trace(go.Scatter(
+                x=df["V"], y=df["I"],
+                mode='lines',
+                name=f"{name} - Original",
+                line=dict(dash="solid")
+            ))
+
+            # Curva corregida
+            fig_corr.add_trace(go.Scatter(
+                x=df["V_STC"], y=df["I_STC"],
+                mode='lines',
+                name=f"{name} - Corregida STC",
+                line=dict(dash="dash")
+            ))
+
+        fig_corr.update_layout(
+            title="Comparación de Curvas IV (Original vs Corregida a STC)",
+            xaxis_title="Voltaje (V)",
+            yaxis_title="Corriente (A)",
+            height=600,
+            showlegend=True
+        )
+
+        st.plotly_chart(fig_corr, use_container_width=True)
+    else:
+        st.warning("No se encontraron curvas corregidas a STC.")
 
     
     # Tabla de datos
@@ -326,6 +383,26 @@ def main():
         <p>Generado automáticamente por el sistema de análisis PVStand</p>
     </div>
     """, unsafe_allow_html=True)
+
+    st.subheader("📐 Parámetros Calculados (Curvas Corregidas)")
+
+    param_rows = []
+    for df in corrected_curves:
+        name = df["Archivo"].iloc[0].replace("_corregida.csv", "")
+        pmax_idx = df["P_STC"].idxmax()
+        pmax = df["P_STC"].iloc[pmax_idx]
+        vmp = df["V_STC"].iloc[pmax_idx]
+        imp = df["I_STC"].iloc[pmax_idx]
+
+        param_rows.append({
+            "Archivo": name,
+            "Pmax (W)": round(pmax, 2),
+            "Vmp (V)": round(vmp, 2),
+            "Imp (A)": round(imp, 2)
+        })
+
+    df_params = pd.DataFrame(param_rows)
+    st.dataframe(df_params, use_container_width=True)
 
 if __name__ == "__main__":
     main()
