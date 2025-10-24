@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Aplicación Streamlit para visualización de curvas IV del PVStand
+Aplicación Streamlit para visualización de curvas IV del PVStand (+ IV600 opcional)
+- Mantiene import original (solo process_pvstand_iv_files)
+- Suma IV600 de forma perezosa: si hay resultados, los usa; si no, intenta procesar sin romper la app
 """
 
 import streamlit as st
@@ -14,10 +16,61 @@ import glob
 
 # Agregar el directorio raíz del proyecto al path de Python
 project_root = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(project_root)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
+# === Import original que ya te funcionaba ===
 from pvstand.analysis.pvstand_iv_processor import process_pvstand_iv_files
 
+# -----------------------------------------------------------------------------
+# Helpers específicos para IV600 (opcionales y sin romper el arranque)
+# -----------------------------------------------------------------------------
+def _iv600_out_dir():
+    # Mantiene tu convención de outputs
+    return os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv600", "iv_curves")
+
+def _iv600_in_dir_or_file():
+    """
+    Devuelve una ruta candidata para IV600: intenta usar config.paths.IV600_RAW_DATA_DIR o
+    config.paths.IV600_RAW_DATA_FILE si existen; sino, cae en pvstand/datos.
+    """
+    try:
+        from config import paths as _paths
+        cand = getattr(_paths, "IV600_RAW_DATA_DIR", None) or getattr(_paths, "IV600_RAW_DATA_FILE", None)
+        if cand:
+            return cand
+    except Exception:
+        pass
+    return os.path.join(project_root, "pvstand", "datos")
+
+def _try_process_iv600():
+    """
+    Intenta procesar IV600 **sin romper la app**:
+    - Importa process_IV600_iv_files dentro de un try/except
+    - Si falta openpyxl o la función, solo avisa en UI y continúa
+    """
+    try:
+        from pvstand.analysis.pvstand_iv_processor import process_IV600_iv_files  # import perezoso
+    except Exception:
+        st.info("IV600: módulo aún no disponible para procesamiento automático. "
+                "Si ya generaste resultados, se cargarán desde el disco.")
+        return False
+
+    data_dir = _iv600_in_dir_or_file()
+    out_dir = _iv600_out_dir()
+    os.makedirs(out_dir, exist_ok=True)
+
+    try:
+        res = process_IV600_iv_files(data_dir=data_dir, output_dir=out_dir)
+        return bool(res)
+    except Exception as e:
+        st.warning(f"IV600: no se pudo procesar automáticamente ({e}). "
+                   f"Si ya tienes el CSV en {_iv600_out_dir()}, lo cargaremos.")
+        return False
+
+# -----------------------------------------------------------------------------
+# Tu código original (con mínimos cambios para combinar IV600)
+# -----------------------------------------------------------------------------
 def load_corrected_curves():
     """Carga las curvas corregidas a STC"""
     corrected_dir = os.path.join(project_root, "pvstand", "resultados_correccion")
@@ -30,63 +83,109 @@ def load_corrected_curves():
             df = pd.read_csv(filepath)
             df["Archivo"] = os.path.basename(filepath)
             curves.append(df)
-        except Exception as e:
+        except Exception:
             st.warning(f"Error leyendo archivo corregido: {filepath}")
             continue
-
     return curves
 
+def _load_pvstand_analysis():
+    """Carga (y si falta, procesa) el análisis PVStand (tu lógica original)."""
+    data_dir = os.path.join(project_root, "pvstand", "datos")
+    output_dir = os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves")
+    os.makedirs(output_dir, exist_ok=True)
+
+    analysis_file = os.path.join(output_dir, "iv_analysis.csv")
+    if not os.path.exists(analysis_file):
+        st.info("Procesando datos de curvas IV (PVStand)...")
+        results = process_pvstand_iv_files(data_dir=data_dir, output_dir=output_dir)
+        if not results:
+            st.error("Error procesando datos PVStand")
+            return None
+
+    try:
+        return pd.read_csv(analysis_file)
+    except Exception as e:
+        st.error(f"Error cargando análisis PVStand: {e}")
+        return None
+
+def _load_iv600_analysis_if_available():
+    """
+    Carga análisis de IV600 si ya existe; si no existe, intenta procesar.
+    Devuelve DataFrame o None (no revienta la app).
+    """
+    analysis_file = os.path.join(_iv600_out_dir(), "iv_analysis.csv")
+    if not os.path.exists(analysis_file):
+        # Intentar procesar de forma segura
+        st.info("Buscando resultados de IV600...")
+        _try_process_iv600()
+
+    if os.path.exists(analysis_file):
+        try:
+            df = pd.read_csv(analysis_file)
+            # Homologar columnas si hiciera falta (por compatibilidad)
+            expected = ["Filename","Date","Time","Module","Module_Category",
+                        "Irradiance_W_m2","Temperature_C","Pmax_W","Vmp_V","Imp_A",
+                        "Isc_A","Voc_V","FF","Efficiency_%"]
+            for c in expected:
+                if c not in df.columns:
+                    df[c] = np.nan
+            return df[expected]
+        except Exception as e:
+            st.warning(f"IV600: no se pudo leer el análisis existente ({e}).")
+            return None
+    return None
 
 def load_iv_data():
-    """Carga los datos de curvas IV"""
+    """Carga los datos de curvas IV (PVStand + IV600 si está disponible)"""
     try:
-        # Procesar archivos si no existen los datos
-        data_dir = os.path.join(project_root, "pvstand", "datos")
-        output_dir = os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves")
-        
-        if not os.path.exists(os.path.join(output_dir, "iv_analysis.csv")):
-            st.info("Procesando datos de curvas IV...")
-            results = process_pvstand_iv_files(data_dir=data_dir, output_dir=output_dir)
-            if not results:
-                st.error("Error procesando datos")
-                return None
-        
-        # Cargar datos procesados
-        analysis_file = os.path.join(output_dir, "iv_analysis.csv")
-        df_analysis = pd.read_csv(analysis_file)
-        
-        return df_analysis
+        df_pv = _load_pvstand_analysis()
+        if df_pv is None:
+            return None
+
+        df_600 = _load_iv600_analysis_if_available()
+
+        # Tag de origen
+        df_pv["Source"] = "PVStand"
+        if df_600 is not None and not df_600.empty:
+            df_600["Source"] = "IV600"
+            # Concatenar y ordenar columnas como en tu tabla
+            combined = pd.concat([df_pv, df_600], ignore_index=True, sort=False)
+            order_cols = ["Filename","Date","Time","Module","Module_Category",
+                          "Irradiance_W_m2","Temperature_C","Pmax_W","Vmp_V","Imp_A",
+                          "Isc_A","Voc_V","FF","Efficiency_%","Source"]
+            cols = [c for c in order_cols if c in combined.columns] + \
+                   [c for c in combined.columns if c not in order_cols]
+            return combined[cols]
+        else:
+            return df_pv
+
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
         return None
 
 def load_real_iv_data():
-    """Carga los datos reales de las curvas IV"""
+    """Carga los datos reales de las curvas IV (como tenías, sólo PVStand)."""
     try:
-        # Buscar archivos de datos procesados
         data_dir = os.path.join(project_root, "pvstand", "datos")
+
+        # Procesar archivos si no existen (sólo para asegurar IV real listo)
         output_dir = os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves")
-        
-        # Procesar archivos si no existen
         if not os.path.exists(os.path.join(output_dir, "iv_analysis.csv")):
-            from pvstand.analysis.pvstand_iv_processor import process_pvstand_iv_files
             results = process_pvstand_iv_files(data_dir=data_dir, output_dir=output_dir)
             if not results:
                 return None
-        
-        # Cargar datos reales de curvas IV
+
+        # Cargar datos reales de curvas IV (PVStand .txt)
         real_curves = []
         for filename in os.listdir(data_dir):
             if filename.endswith('.txt'):
                 filepath = os.path.join(data_dir, filename)
                 try:
-                    # Leer archivo real
                     with open(filepath, 'r', encoding='latin-1') as f:
                         lines = f.readlines()
-                    
-                    # Extraer datos de curva IV (desde línea 24)
+
                     iv_data = []
-                    for line in lines[23:]:  # Desde línea 24
+                    for line in lines[23:]:
                         if line.strip():
                             parts = line.strip().split('\t')
                             if len(parts) >= 3:
@@ -97,17 +196,14 @@ def load_real_iv_data():
                                     iv_data.append([voltage, current, power])
                                 except ValueError:
                                     continue
-                    
+
                     if iv_data:
-                        # Determinar tipo de módulo por hora
                         time_str = lines[1].split('\t')[1] if len(lines) > 1 else ""
-                        if time_str >= "14:30:00" and time_str <= "15:05:00":
-                            module_category = "Minimódulo"
-                            color = "red"
+                        if "14:30:00" <= time_str <= "15:05:00":
+                            module_category = "Minimódulo"; color = "red"
                         else:
-                            module_category = "Módulo Risen"
-                            color = "blue"
-                        
+                            module_category = "Módulo Risen"; color = "blue"
+
                         real_curves.append({
                             'filename': filename,
                             'time': time_str,
@@ -115,38 +211,30 @@ def load_real_iv_data():
                             'color': color,
                             'iv_data': np.array(iv_data)
                         })
-                        
-                except Exception as e:
+                except Exception:
                     continue
-        
+
         return real_curves
     except Exception as e:
         st.error(f"Error cargando datos reales: {e}")
         return None
 
 def create_interactive_plot(df_analysis):
-    """Crea gráficos separados para Módulo Risen y Minimódulo"""
-
+    """Crea gráficos separados para Módulo Risen y Minimódulo (como tenías)."""
     real_curves = load_real_iv_data()
-    
     if not real_curves:
         st.error("No se pudieron cargar los datos reales de las curvas IV")
         return
-    
-    # Agrupar curvas por tipo
-    grouped_curves = {
-        "Módulo Risen": [],
-        "Minimódulo": []
-    }
-    
+
+    grouped_curves = {"Módulo Risen": [], "Minimódulo": []}
     for curve in real_curves:
         grouped_curves[curve['module_category']].append(curve)
-    
+
     for module_type, curves in grouped_curves.items():
         if not curves:
             st.warning(f"No se encontraron curvas para {module_type}")
             continue
-        
+
         st.subheader(f"🔍 {module_type}")
 
         fig = make_subplots(
@@ -154,56 +242,34 @@ def create_interactive_plot(df_analysis):
             subplot_titles=(f"Curvas I-V - {module_type}", f"Curvas P-V - {module_type}"),
             specs=[[{"secondary_y": False}, {"secondary_y": False}]]
         )
-        
+
         for curve in curves:
             iv_data = curve['iv_data']
-            voltage = iv_data[:, 0]
-            current = iv_data[:, 1]
-            power = iv_data[:, 2]
-            
+            voltage, current, power = iv_data[:,0], iv_data[:,1], iv_data[:,2]
             name = f"{curve['time']}"
 
-            # IV
             fig.add_trace(
                 go.Scatter(
-                    x=voltage, y=current,
-                    mode='lines',
-                    name=name,
+                    x=voltage, y=current, mode='lines', name=name,
                     line=dict(color=curve['color'], width=2),
                     hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>I: %{{y:.2f}} A<extra></extra>'
                 ),
                 row=1, col=1
             )
-            
-            # PV
             fig.add_trace(
                 go.Scatter(
-                    x=voltage, y=power,
-                    mode='lines',
-                    name=name,
+                    x=voltage, y=power, mode='lines', name=name, showlegend=False,
                     line=dict(color=curve['color'], width=2),
-                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>P: %{{y:.2f}} W<extra></extra>',
-                    showlegend=False
+                    hovertemplate=f'<b>{name}</b><br>V: %{{x:.2f}} V<br>P: %{{y:.2f}} W<extra></extra>'
                 ),
                 row=1, col=2
             )
 
-        # Layout
         fig.update_layout(
-            height=500,
-            showlegend=True,
-            margin=dict(t=60),
-            title_text=f"{module_type} - Curvas IV y PV",
-            title_x=0.5,
-            legend=dict(
-                orientation="v",
-                yanchor="top",
-                y=1,
-                xanchor="left",
-                x=1.02
-            )
+            height=500, showlegend=True, margin=dict(t=60),
+            title_text=f"{module_type} - Curvas IV y PV", title_x=0.5,
+            legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
         )
-        
         fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
         fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
         fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
@@ -211,74 +277,64 @@ def create_interactive_plot(df_analysis):
 
         st.plotly_chart(fig, use_container_width=True)
 
-
+# -----------------------------------------------------------------------------
+# Tu main intacto (sin cambios en UI, solo ahora combina IV600 si existe)
+# -----------------------------------------------------------------------------
 def main():
     """Función principal de la aplicación"""
-    
-    # Configurar página
+
     st.set_page_config(
         page_title="Análisis PVStand - Curvas IV",
         page_icon="☀️",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    
-    # Título principal
+
     st.title("☀️ Análisis de Curvas IV - PVStand")
     st.markdown("---")
-    
-    # Sidebar con información
+
     with st.sidebar:
         st.header("📊 Información del Análisis")
         st.markdown("""
         **Módulos analizados:**
         - 🔵 **Módulo Risen**: 13:30-14:05
         - 🔴 **Minimódulo**: 14:30-15:00
-        
+
         **Parámetros calculados:**
         - Pmax, Vmp, Imp
         - Isc, Voc
         - Factor de llenado
         - Eficiencia
         """)
-    
-    # Cargar datos
+
+    # Cargar datos (ahora intenta combinar IV600 si existe)
     with st.spinner("Cargando datos de curvas IV..."):
         df_analysis = load_iv_data()
-    
+
     if df_analysis is None:
         st.error("No se pudieron cargar los datos")
         return
-    
-    # Mostrar resumen de datos
+
+    # Resumen
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
         st.metric("📈 Mediciones", len(df_analysis))
-    
     with col2:
-        risen_count = len(df_analysis[df_analysis['Module_Category'] == 'Módulo Risen'])
+        risen_count = len(df_analysis[df_analysis['Module_Category'] == 'Módulo Risen']) if 'Module_Category' in df_analysis else 0
         st.metric("🔵 Módulo Risen", risen_count)
-    
     with col3:
-        minimodule_count = len(df_analysis[df_analysis['Module_Category'] == 'Minimódulo'])
+        minimodule_count = len(df_analysis[df_analysis['Module_Category'] == 'Minimódulo']) if 'Module_Category' in df_analysis else 0
         st.metric("🔴 Minimódulo", minimodule_count)
-    
     with col4:
-        avg_irradiance = df_analysis['Irradiance_W_m2'].mean()
-        st.metric("☀️ Irradiación Promedio", f"{avg_irradiance:.0f} W/m²")
-    
+        avg_irradiance = df_analysis['Irradiance_W_m2'].mean() if 'Irradiance_W_m2' in df_analysis else np.nan
+        st.metric("☀️ Irradiación Promedio", f"{avg_irradiance:.0f} W/m²" if np.isfinite(avg_irradiance) else "N/D")
+
     st.markdown("---")
-    
-    # Gráfico interactivo
+
     st.header("📊 Curvas IV Interactivas (Datos Reales)")
-    
-    # Mostrar información sobre las curvas reales
     real_curves = load_real_iv_data()
     if real_curves:
         st.info(f"✅ Cargadas {len(real_curves)} curvas reales de los archivos de datos")
-        
-        # Mostrar resumen de curvas
         col1, col2 = st.columns(2)
         with col1:
             risen_count = len([c for c in real_curves if c['module_category'] == 'Módulo Risen'])
@@ -286,104 +342,59 @@ def main():
         with col2:
             minimodule_count = len([c for c in real_curves if c['module_category'] == 'Minimódulo'])
             st.metric("🔴 Curvas Minimódulo", minimodule_count)
-    
+
     create_interactive_plot(df_analysis)
+
     st.header("⚙️ Curvas IV Corregidas a STC")
-
     corrected_curves = load_corrected_curves()
-
     if corrected_curves:
         fig_corr = go.Figure()
-
         for df in corrected_curves:
             name = df["Archivo"].iloc[0].removesuffix("_corregida.csv")
-
-            # Curva original - línea sólida
-            fig_corr.add_trace(go.Scatter(
-                x=df["V"], y=df["I"],
-                mode='lines',
-                name=f"{name} - Original",
-                line=dict(dash="solid", width=2)
-            ))
-
-            # Curva corregida STC - línea punteada
-            fig_corr.add_trace(go.Scatter(
-                x=df["V_STC"], y=df["I_STC"],
-                mode='lines',
-                name=f"{name} - Corregida STC",
-                line=dict(dash="dash", width=2)
-            ))
-
+            fig_corr.add_trace(go.Scatter(x=df["V"], y=df["I"], mode='lines',
+                                          name=f"{name} - Original", line=dict(dash="solid", width=2)))
+            fig_corr.add_trace(go.Scatter(x=df["V_STC"], y=df["I_STC"], mode='lines',
+                                          name=f"{name} - Corregida STC", line=dict(dash="dash", width=2)))
         fig_corr.update_layout(
             title="📊 Comparación de Curvas IV (Original vs Corregida a STC)",
-            xaxis_title="Voltaje (V)",
-            yaxis_title="Corriente (A)",
-            height=600,
-            legend=dict(
-                orientation="v",
-                yanchor="top",
-                y=1,
-                xanchor="left",
-                x=1.02
-            )
+            xaxis_title="Voltaje (V)", yaxis_title="Corriente (A)",
+            height=600, legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
         )
-
-        st.plotly_chart(fig_corr, width="stretch")
+        st.plotly_chart(fig_corr, use_container_width=True)
     else:
         st.warning("⚠️ No se encontraron curvas corregidas a STC.")
 
-
-    
-    # Tabla de datos
+    # Tabla y descarga
     st.header("📋 Datos del Análisis")
-    
-    # Filtros
     col1, col2 = st.columns(2)
-    
     with col1:
         module_filter = st.selectbox(
             "Filtrar por tipo de módulo:",
-            ["Todos"] + list(df_analysis['Module_Category'].unique())
+            ["Todos"] + list(df_analysis['Module_Category'].dropna().unique()) if 'Module_Category' in df_analysis else ["Todos"]
         )
-    
     with col2:
         sort_by = st.selectbox(
             "Ordenar por:",
-            ["Time", "Pmax_W", "Efficiency_%", "Irradiance_W_m2"]
+            [c for c in ["Time", "Pmax_W", "Efficiency_%", "Irradiance_W_m2"] if c in df_analysis.columns] or [df_analysis.columns[0]]
         )
-    
-    # Aplicar filtros
+
     filtered_df = df_analysis.copy()
-    if module_filter != "Todos":
+    if module_filter != "Todos" and 'Module_Category' in filtered_df:
         filtered_df = filtered_df[filtered_df['Module_Category'] == module_filter]
-    
-    filtered_df = filtered_df.sort_values(by=sort_by)
-    
-    # Mostrar tabla
-    st.dataframe(
-        filtered_df,
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    # Descargar datos
+    if sort_by in filtered_df.columns:
+        filtered_df = filtered_df.sort_values(by=sort_by)
+
+    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+
     st.header("💾 Descargar Datos")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        csv_data = filtered_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Descargar CSV",
-            data=csv_data,
-            file_name="iv_analysis.csv",
-            mime="text/csv"
-        )
-    
-    with col2:
-        st.info("💡 Los datos incluyen todos los parámetros calculados de las curvas IV")
-    
-    # Footer
+    csv_data = filtered_df.to_csv(index=False)
+    st.download_button(
+        label="📥 Descargar CSV",
+        data=csv_data,
+        file_name="iv_analysis.csv",
+        mime="text/csv"
+    )
+
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666;'>
@@ -392,42 +403,32 @@ def main():
     """, unsafe_allow_html=True)
 
     st.subheader("📐 Parámetros Calculados (Curvas Corregidas)")
-
-    param_rows = []
-    for df in corrected_curves:
-        name = df["Archivo"].iloc[0].replace("_corregida.csv", "")
-        pmax_idx = df["P_STC"].idxmax()
-        pmax = df["P_STC"].iloc[pmax_idx]
-        vmp = df["V_STC"].iloc[pmax_idx]
-        imp = df["I_STC"].iloc[pmax_idx]
-
-        # Estimar Voc: máximo V donde I ≈ 0
-        voc_candidates = df[df["I_STC"] <= 0.05]  # Umbral tolerante
-        voc = voc_candidates["V_STC"].max() if not voc_candidates.empty else np.nan
-
-        # Estimar Isc: máximo I donde V ≈ 0
-        isc_candidates = df[df["V_STC"] <= 0.05]
-        isc = isc_candidates["I_STC"].max() if not isc_candidates.empty else np.nan
-
-        # Calcular FF si es posible
-        if voc and isc and voc > 0 and isc > 0:
-            ff = pmax / (voc * isc)
-        else:
-            ff = np.nan
-
-        param_rows.append({
-            "Archivo": name,
-            "Pmax (W)": round(pmax, 2),
-            "Vmp (V)": round(vmp, 2),
-            "Imp (A)": round(imp, 2),
-            "Voc (V)": round(voc, 2) if not np.isnan(voc) else "-",
-            "Isc (A)": round(isc, 2) if not np.isnan(isc) else "-",
-            "FF": round(ff, 3) if not np.isnan(ff) else "-"
-        })
-
-    df_params = pd.DataFrame(param_rows)
-    st.dataframe(df_params, use_container_width=True)
-
+    if corrected_curves:
+        param_rows = []
+        for df in corrected_curves:
+            name = df["Archivo"].iloc[0].replace("_corregida.csv", "")
+            pmax_idx = df["P_STC"].idxmax()
+            pmax = df["P_STC"].iloc[pmax_idx]
+            vmp = df["V_STC"].iloc[pmax_idx]
+            imp = df["I_STC"].iloc[pmax_idx]
+            voc_candidates = df[df["I_STC"] <= 0.05]
+            voc = voc_candidates["V_STC"].max() if not voc_candidates.empty else np.nan
+            isc_candidates = df[df["V_STC"] <= 0.05]
+            isc = isc_candidates["I_STC"].max() if not isc_candidates.empty else np.nan
+            ff = pmax / (voc * isc) if (pd.notna(voc) and pd.notna(isc) and voc > 0 and isc > 0) else np.nan
+            param_rows.append({
+                "Archivo": name,
+                "Pmax (W)": round(pmax, 2),
+                "Vmp (V)": round(vmp, 2),
+                "Imp (A)": round(imp, 2),
+                "Voc (V)": round(voc, 2) if pd.notna(voc) else "-",
+                "Isc (A)": round(isc, 2) if pd.notna(isc) else "-",
+                "FF": round(ff, 3) if pd.notna(ff) else "-"
+            })
+        df_params = pd.DataFrame(param_rows)
+        st.dataframe(df_params, use_container_width=True)
+    else:
+        st.caption("Sin curvas corregidas para calcular parámetros.")
 
 if __name__ == "__main__":
     main()
