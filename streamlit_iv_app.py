@@ -21,6 +21,124 @@ if project_root not in sys.path:
 
 # === Import original que ya te funcionaba ===
 from pvstand.analysis.pvstand_iv_processor import process_pvstand_iv_files
+from pathlib import Path
+
+# Candidatos donde podría estar el reporte del IV600
+IV600_REPORT_CANDIDATES = [
+    "/home/nicole/atamos_pvstand/pvstand/pvstand/datos_procesados_analisis_integrado_py/iv600/iv_curves/iv_curves_report.xlsx",
+    os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv600", "iv_curves", "iv_curves_report.xlsx"),
+    os.path.join(project_root, "pvstand", "pvstand", "datos_procesados_analisis_integrado_py", "iv600", "iv_curves", "iv_curves_report.xlsx"),
+]
+
+def _find_iv600_report():
+    for p in IV600_REPORT_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+def _load_iv600_analysis_from_report(report_path: str):
+    """
+    Lee 'Analisis_Parametros' de iv_curves_report.xlsx y devuelve un DataFrame
+    homogeneizado con las columnas esperadas por la app.
+    """
+    try:
+        xls = pd.ExcelFile(report_path)
+    except Exception as e:
+        st.warning(f"IV600: no se pudo abrir el reporte ({e}).")
+        return None
+
+    # Buscar hoja 'Analisis_Parametros' (tolerante a acentos/mayúsculas)
+    sheet = None
+    for s in xls.sheet_names:
+        sl = s.strip().lower().replace("á","a")
+        if sl == "analisis_parametros":
+            sheet = s
+            break
+    if sheet is None:
+        st.warning("IV600: hoja 'Analisis_Parametros' no encontrada en el Excel.")
+        return None
+
+    df = xls.parse(sheet)
+
+    # Renombrar columnas a las que usa la app
+    rename = {
+        "Archivo": "Filename",
+        "Fecha": "Date",
+        "Hora": "Time",
+        "Modulo": "Module",
+        "Irradiacion_W_m2": "Irradiance_W_m2",
+        "Temperatura_C": "Temperature_C",
+        "Eficiencia_%": "Efficiency_%"
+    }
+    df = df.rename(columns=rename, errors="ignore")
+
+    # Asegurar columnas esperadas por la app
+    expected = ["Filename","Date","Time","Module","Module_Category",
+                "Irradiance_W_m2","Temperature_C","Pmax_W","Vmp_V","Imp_A",
+                "Isc_A","Voc_V","FF","Efficiency_%"]
+    if "Module_Category" not in df.columns:
+        df["Module_Category"] = "IV600"
+    for c in expected:
+        if c not in df.columns:
+            df[c] = np.nan
+
+    return df[expected]
+
+def _load_iv600_curves_from_report(report_path: str):
+    """
+    Lee las hojas por curva del Excel (todas excepto 'Metadatos' y 'Analisis_Parametros')
+    y devuelve una lista de curvas para graficar (como las reales de PVStand).
+    """
+    try:
+        xls = pd.ExcelFile(report_path)
+    except Exception:
+        return []
+
+    skip = set()
+    for s in xls.sheet_names:
+        sl = s.strip().lower().replace("á","a")
+        if sl in {"metadatos","analisis_parametros"}:
+            skip.add(s)
+
+    # Mapa opcional filename -> hora, para etiquetar
+    time_map = {}
+    try:
+        df_params = _load_iv600_analysis_from_report(report_path)
+        if df_params is not None:
+            time_map = dict(zip(df_params["Filename"].astype(str), df_params["Time"].astype(str)))
+    except Exception:
+        pass
+
+    curves = []
+    for s in xls.sheet_names:
+        if s in skip:
+            continue
+        try:
+            df = xls.parse(s)
+            needed = {"Voltage_V","Current_A","Power_W"}
+            if not needed.issubset(set(df.columns)):
+                continue
+            arr = df[["Voltage_V","Current_A","Power_W"]].dropna().to_numpy()
+            if arr.size == 0:
+                continue
+            # etiquetar con hora si la encontramos por filename base
+            base = Path(s).stem
+            label_time = ""
+            # buscar coincidencia relajada
+            for k,v in time_map.items():
+                if base in k or k in base:
+                    label_time = v
+                    break
+            curves.append({
+                "filename": s,
+                "time": label_time,
+                "module_category": "IV600",
+                "color": "green",
+                "iv_data": arr
+            })
+        except Exception:
+            continue
+    return curves
 
 # -----------------------------------------------------------------------------
 # Helpers específicos para IV600 (opcionales y sin romper el arranque)
@@ -136,32 +254,48 @@ def _load_iv600_analysis_if_available():
     return None
 
 def load_iv_data():
-    """Carga los datos de curvas IV (PVStand + IV600 si está disponible)"""
+    """Carga datos PVStand y, si existe el Excel, también IV600."""
     try:
-        df_pv = _load_pvstand_analysis()
-        if df_pv is None:
-            return None
+        # PVStand (tu lógica original)
+        data_dir = os.path.join(project_root, "pvstand", "datos")
+        output_dir = os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves")
+        os.makedirs(output_dir, exist_ok=True)
 
-        df_600 = _load_iv600_analysis_if_available()
+        if not os.path.exists(os.path.join(output_dir, "iv_analysis.csv")):
+            st.info("Procesando datos de curvas IV (PVStand)...")
+            results = process_pvstand_iv_files(data_dir=data_dir, output_dir=output_dir)
+            if not results:
+                st.error("Error procesando datos PVStand")
+                return None
 
-        # Tag de origen
+        df_pv = pd.read_csv(os.path.join(output_dir, "iv_analysis.csv"))
         df_pv["Source"] = "PVStand"
-        if df_600 is not None and not df_600.empty:
-            df_600["Source"] = "IV600"
-            # Concatenar y ordenar columnas como en tu tabla
-            combined = pd.concat([df_pv, df_600], ignore_index=True, sort=False)
-            order_cols = ["Filename","Date","Time","Module","Module_Category",
-                          "Irradiance_W_m2","Temperature_C","Pmax_W","Vmp_V","Imp_A",
-                          "Isc_A","Voc_V","FF","Efficiency_%","Source"]
-            cols = [c for c in order_cols if c in combined.columns] + \
-                   [c for c in combined.columns if c not in order_cols]
-            return combined[cols]
+
+        # IV600 desde el Excel (si está)
+        report = _find_iv600_report()
+        if report:
+            df_600 = _load_iv600_analysis_from_report(report)
+            if df_600 is not None and not df_600.empty:
+                df_600["Source"] = "IV600"
+                # Unir y ordenar columnas
+                order_cols = ["Filename","Date","Time","Module","Module_Category",
+                              "Irradiance_W_m2","Temperature_C","Pmax_W","Vmp_V","Imp_A",
+                              "Isc_A","Voc_V","FF","Efficiency_%","Source"]
+                combined = pd.concat([df_pv, df_600], ignore_index=True, sort=False)
+                cols = [c for c in order_cols if c in combined.columns] + \
+                       [c for c in combined.columns if c not in order_cols]
+                return combined[cols]
+            else:
+                st.info("IV600: reporte encontrado pero sin datos legibles; se muestra solo PVStand.")
         else:
-            return df_pv
+            st.info("No se encontró el reporte Excel de IV600; se muestra solo PVStand.")
+
+        return df_pv
 
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
         return None
+
 
 def load_real_iv_data():
     """Carga los datos reales de las curvas IV (como tenías, sólo PVStand)."""
@@ -276,6 +410,40 @@ def create_interactive_plot(df_analysis):
         fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
 
         st.plotly_chart(fig, use_container_width=True)
+
+# --- Curvas IV600 desde el Excel (si existe) ---
+iv600_report = _find_iv600_report()
+if iv600_report:
+    st.subheader("🟢 Curvas IV Interactivas – IV600 (.xlsx)")
+    curves_iv600 = _load_iv600_curves_from_report(iv600_report)
+    if curves_iv600:
+        # Reusar tu mismo layout de 2 paneles (IV/PV)
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=("Curvas I-V - IV600", "Curvas P-V - IV600"),
+            specs=[[{"secondary_y": False}, {"secondary_y": False}]]
+        )
+        for c in curves_iv600:
+            v, i, p = c["iv_data"][:,0], c["iv_data"][:,1], c["iv_data"][:,2]
+            name = c["time"] or c["filename"]
+            fig.add_trace(go.Scatter(x=v, y=i, mode="lines", name=name,
+                                     line=dict(color=c["color"], width=2)),
+                          row=1, col=1)
+            fig.add_trace(go.Scatter(x=v, y=p, mode="lines", name=name,
+                                     line=dict(color=c["color"], width=2), showlegend=False),
+                          row=1, col=2)
+
+        fig.update_layout(height=500, showlegend=True, margin=dict(t=60),
+                          title_text="IV600 - Curvas IV y PV", title_x=0.5,
+                          legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02))
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
+        fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
+        fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
+
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("El Excel de IV600 no contiene hojas de curva legibles.")
 
 # -----------------------------------------------------------------------------
 # Tu main intacto (sin cambios en UI, solo ahora combina IV600 si existe)
