@@ -501,15 +501,6 @@ def main():
 
     st.header("📊 Curvas IV Interactivas (Datos Reales)")
     real_curves = load_real_iv_data()
-    if real_curves:
-        st.info(f"✅ Cargadas {len(real_curves)} curvas reales de los archivos de datos")
-        col1, col2 = st.columns(2)
-        with col1:
-            risen_count = len([c for c in real_curves if c['module_category'] == 'Módulo Risen'])
-            st.metric("🔵 Curvas Risen", risen_count)
-        with col2:
-            minimodule_count = len([c for c in real_curves if c['module_category'] == 'Minimódulo'])
-            st.metric("🔴 Curvas Minimódulo", minimodule_count)
 
     create_interactive_plot(df_analysis)
 
