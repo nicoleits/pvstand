@@ -1,5 +1,4 @@
 .venv/
-datos_procesados_analisis_integrado_py/
 graficos_analisis_integrado_py/
 datos/data_tm_fix.txt
 
@@ -84,3 +83,6 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+
+#picture
+*.png

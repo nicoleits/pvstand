@@ -49,6 +49,79 @@ except Exception:
     settings = object()
 
 # === Utils ===
+import re
+
+def _to_float_or_none(x):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return None
+    if isinstance(x, str):
+        m = re.search(r"(-?\d+(?:[.,]\d+)?)", x)
+        if not m:
+            return None
+        x = m.group(1).replace(",", ".")
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+def _is_valid_irr(x):
+    try:
+        v = float(x)
+        return 50 <= v <= 1400   # ajusta si usas otro rango plausible
+    except Exception:
+        return False
+
+def _get_full_triplet_from_xls(xls: pd.ExcelFile):
+    """
+    Devuelve dict con irradiancias {'D4': float|None, 'D20': ..., 'D36': ...}
+    leyendo la hoja 'Full' del mismo workbook.
+    """
+    # Busca la hoja "Full" sin importar mayúsculas/acentos
+    sheet = None
+    for s in xls.sheet_names:
+        if s.strip().lower() == "full":
+            sheet = s
+            break
+    if not sheet:
+        return {"D4": None, "D20": None, "D36": None}
+
+    df = xls.parse(sheet, header=None)  # sin encabezados
+    def cell(r,c):
+        try: return df.iat[r,c]
+        except Exception: return None
+
+    d4  = _to_float_or_none(cell(3,3))     # D4  -> (3,3) 0-index
+    d20 = _to_float_or_none(cell(19,3))    # D20 -> (19,3)
+    d36 = _to_float_or_none(cell(35,3))    # D36 -> (35,3)
+
+    # filtrar a rango plausible
+    d4  = d4  if _is_valid_irr(d4)  else None
+    d20 = d20 if _is_valid_irr(d20) else None
+    d36 = d36 if _is_valid_irr(d36) else None
+    return {"D4": d4, "D20": d20, "D36": d36}
+
+def _pick_irradiance_for_time(time_str: str, cands: dict):
+    """
+    Regla por hora: <11 → D4; 11–14 → D20; >14 → D36.
+    Si la hora no sirve o el candidato está vacío, cae al
+    último válido disponible (D36→D20→D4).
+    """
+    hh = None
+    try:
+        hh = int(str(time_str).strip().split(":")[0])
+    except Exception:
+        pass
+
+    if hh is not None:
+        key = "D4" if hh < 11 else ("D20" if hh < 14 else "D36")
+        if cands.get(key) is not None:
+            return cands[key]
+    # fallback
+    for k in ("D36","D20","D4"):
+        if cands.get(k) is not None:
+            return cands[k]
+    return None
+
 def _get_sheet_case_insensitive(xls: pd.ExcelFile, name: str):
     for s in xls.sheet_names:
         if s.strip().lower() == name.strip().lower():
@@ -152,6 +225,10 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
             logger.info(f"Procesando archivo IV600: {os.path.basename(filepath)}")
             xls = pd.ExcelFile(filepath)
 
+            # NUEVO: leer triplete de irradiancias desde 'Full'
+            full_cands = _get_full_triplet_from_xls(xls)
+            logger.info(f"[IV600] Full D4/D20/D36 leídas: {full_cands}")
+
             samples_sheet = _get_sheet_case_insensitive(xls, "samples")
             if not samples_sheet:
                 logger.warning(f"Hoja 'samples' no encontrada en {os.path.basename(filepath)}")
@@ -214,14 +291,25 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
                 if timestamp and len(timestamp.split()) >= 2:
                     date_str, time_str = timestamp.split()[0], timestamp.split()[1]
 
+                # --- decidir irradiancia final ---
+                irr_min = float(irr) if np.isfinite(irr) else np.nan  # lo que vino de 'min'
+                irr_final = irr_min
+
+                # si 'min' no trajo un valor válido, usar 'Full' según la hora
+                if not _is_valid_irr(irr_final):
+                    irr_from_full = _pick_irradiance_for_time(time_str or "", full_cands)
+                    if irr_from_full is not None:
+                        irr_final = float(irr_from_full)
+
                 metadata = {
                     "date": date_str or datetime.today().strftime("%Y-%m-%d"),
                     "time": time_str or f"{9+i:02d}:00:00",
                     "module": f"IV600_sample_{i+1}",
                     "module_category": "IV600",
-                    "irradiance": float(irr) if np.isfinite(irr) else np.nan,
-                    "area": np.nan,  # completar si se conoce
+                    "irradiance": irr_final,   # ← YA QUEDA INYECTADA LA IRRADIANCIA CORRECTA
+                    "area": np.nan,
                 }
+
 
                 efficiency = np.nan
                 if np.isfinite(metadata["irradiance"]) and metadata["irradiance"] > 0 and np.isfinite(max_p):
