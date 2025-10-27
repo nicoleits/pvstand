@@ -270,20 +270,24 @@ def load_iv_data():
             df_600 = _load_iv600_analysis_from_report(report)
             if df_600 is not None and not df_600.empty:
                 df_600["Source"] = "IV600"
-                # Unir y ordenar columnas
-                order_cols = [
-                    "Filename","Date","Time","Module","Module_Category",
-                    "Irradiance_W_m2","Temperature_C",
-                    "Pmax_W","Vmp_V","Imp_A","Isc_A","Voc_V","FF","Efficiency_%",
-                    # columnas IV600 @1000 W/m² (opcionales)
-                    "Irradiance_Ref_W_m2",
-                    "Pmax_W_Gref","Vmp_V_Gref","Imp_A_Gref","Isc_A_Gref","Voc_V_Gref","FF_Gref","Efficiency_%_Gref",
-                    "Source"
-                ]
-                # al final de load_iv_data(), al construir 'cols':
-                cols = [c for c in order_cols if c in combined.columns] + \
-                    [c for c in combined.columns if c not in order_cols]
-                return combined[cols]
+            # Unir y ordenar columnas
+            order_cols = [
+                "Filename","Date","Time","Module","Module_Category",
+                "Irradiance_W_m2","Temperature_C",
+                "Pmax_W","Vmp_V","Imp_A","Isc_A","Voc_V","FF","Efficiency_%",
+                # columnas IV600 @1000 W/m² (opcionales)
+                "Irradiance_Ref_W_m2",
+                "Pmax_W_Gref","Vmp_V_Gref","Imp_A_Gref","Isc_A_Gref","Voc_V_Gref","FF_Gref","Efficiency_%_Gref",
+                "Source"
+            ]
+
+            # <-- ESTO FALTABA: concatenar PVStand + IV600
+            combined = pd.concat([df_pv, df_600], ignore_index=True, sort=False)
+
+            cols = [c for c in order_cols if c in combined.columns] + \
+                [c for c in combined.columns if c not in order_cols]
+            return combined[cols]
+
 
             else:
                 st.info("IV600: reporte encontrado pero sin datos legibles; se muestra solo PVStand.")
