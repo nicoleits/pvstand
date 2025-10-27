@@ -1,0 +1,23 @@
+import os, pandas as pd
+
+base = "/home/nicole/atamos_pvstand/pvstand/pvstand/datos_procesados_analisis_integrado_py/iv600/iv_curves"
+xlsx = os.path.join(base, "iv_curves_report.xlsx")
+csv  = os.path.join(base, "iv_analysis.csv")
+
+print("Excel:", xlsx, "→", os.path.exists(xlsx))
+if os.path.exists(xlsx):
+    xls = pd.ExcelFile(xlsx)
+    print("Sheets:", xls.sheet_names[:6])
+    # toma la primera hoja de curva real (no Metadatos/Analisis_Parametros)
+    curve_sheets = [s for s in xls.sheet_names if s not in ("Metadatos","Analisis_Parametros")]
+    if curve_sheets:
+        df0 = xls.parse(curve_sheets[0])
+        print("Cols hoja 1:", [c for c in df0.columns if c in ["Voltage_V","Current_A","Power_W","Current_A_1000","Power_W_1000"]])
+
+print("CSV:", csv, "→", os.path.exists(csv))
+if os.path.exists(csv):
+    df = pd.read_csv(csv)
+    gref_cols = [c for c in df.columns if c.endswith("_Gref")] + [c for c in df.columns if c=="Irradiance_Ref_W_m2"]
+    print("Cols *_Gref:", gref_cols)
+    print(df[["Filename","Module_Category","Pmax_W","Pmax_W_Gref"]].head(3))
+

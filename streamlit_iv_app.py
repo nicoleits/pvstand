@@ -37,42 +37,23 @@ def _find_iv600_report():
     return None
 
 def _load_iv600_analysis_from_report(report_path: str):
-    """
-    Lee 'Analisis_Parametros' de iv_curves_report.xlsx y devuelve un DataFrame
-    homogeneizado con las columnas esperadas por la app.
-    """
-    try:
-        xls = pd.ExcelFile(report_path)
-    except Exception as e:
-        st.warning(f"IV600: no se pudo abrir el reporte ({e}).")
-        return None
-
-    # Buscar hoja 'Analisis_Parametros' (tolerante a acentos/mayúsculas)
-    sheet = None
-    for s in xls.sheet_names:
-        sl = s.strip().lower().replace("á","a")
-        if sl == "analisis_parametros":
-            sheet = s
-            break
+    xls = pd.ExcelFile(report_path)
+    # localizar hoja Analisis_Parametros (como ya lo tienes)
+    sheet = next((s for s in xls.sheet_names if s.strip().lower().replace("á","a")=="analisis_parametros"), None)
     if sheet is None:
         st.warning("IV600: hoja 'Analisis_Parametros' no encontrada en el Excel.")
         return None
 
     df = xls.parse(sheet)
 
-    # Renombrar columnas a las que usa la app
-    rename = {
-        "Archivo": "Filename",
-        "Fecha": "Date",
-        "Hora": "Time",
-        "Modulo": "Module",
-        "Irradiacion_W_m2": "Irradiance_W_m2",
-        "Temperatura_C": "Temperature_C",
-        "Eficiencia_%": "Efficiency_%"
-    }
-    df = df.rename(columns=rename, errors="ignore")
+    # renombres mínimos
+    df = df.rename(columns={
+        "Archivo":"Filename", "Fecha":"Date", "Hora":"Time", "Modulo":"Module",
+        "Irradiacion_W_m2":"Irradiance_W_m2", "Temperatura_C":"Temperature_C",
+        "Eficiencia_%":"Efficiency_%"
+    }, errors="ignore")
 
-    # Asegurar columnas esperadas por la app
+    # columnas base esperadas
     expected = ["Filename","Date","Time","Module","Module_Category",
                 "Irradiance_W_m2","Temperature_C","Pmax_W","Vmp_V","Imp_A",
                 "Isc_A","Voc_V","FF","Efficiency_%"]
@@ -82,13 +63,12 @@ def _load_iv600_analysis_from_report(report_path: str):
         if c not in df.columns:
             df[c] = np.nan
 
-    return df[expected]
+    # ⬇️ IMPORTANTE: no recortar; preserva columnas extra (*_Gref e Irradiance_Ref_W_m2)
+    order_first = expected + [c for c in df.columns if c not in expected]
+    return df[order_first]
+
 
 def _load_iv600_curves_from_report(report_path: str):
-    """
-    Lee las hojas por curva del Excel (todas excepto 'Metadatos' y 'Analisis_Parametros')
-    y devuelve una lista de curvas para graficar (como las reales de PVStand).
-    """
     try:
         xls = pd.ExcelFile(report_path)
     except Exception:
@@ -100,7 +80,7 @@ def _load_iv600_curves_from_report(report_path: str):
         if sl in {"metadatos","analisis_parametros"}:
             skip.add(s)
 
-    # Mapa opcional filename -> hora, para etiquetar
+    # map opcional filename->hora para etiquetas
     time_map = {}
     try:
         df_params = _load_iv600_analysis_from_report(report_path)
@@ -115,26 +95,39 @@ def _load_iv600_curves_from_report(report_path: str):
             continue
         try:
             df = xls.parse(s)
-            needed = {"Voltage_V","Current_A","Power_W"}
-            if not needed.issubset(set(df.columns)):
+            need_raw = {"Voltage_V","Current_A","Power_W"}
+            if not need_raw.issubset(df.columns):
                 continue
+
+            # crudo
             arr = df[["Voltage_V","Current_A","Power_W"]].dropna().to_numpy()
             if arr.size == 0:
                 continue
-            # etiquetar con hora si la encontramos por filename base
+
+            # @1000 W/m² (si existen)
+            arr_gref = None
+            have_gref = {"Voltage_V_1000","Current_A_1000","Power_W_1000"}.issubset(df.columns)
+            if have_gref:
+                arr_gref = df[["Voltage_V_1000","Current_A_1000","Power_W_1000"]].dropna().to_numpy()
+                if arr_gref.size == 0:
+                    arr_gref = None
+
+            # etiqueta hora
+            from pathlib import Path
             base = Path(s).stem
             label_time = ""
-            # buscar coincidencia relajada
             for k,v in time_map.items():
                 if base in k or k in base:
                     label_time = v
                     break
+
             curves.append({
                 "filename": s,
                 "time": label_time,
                 "module_category": "IV600",
                 "color": "green",
-                "iv_data": arr
+                "iv_data": arr,
+                "iv_data_gref": arr_gref,   # ⬅️ NUEVO
             })
         except Exception:
             continue
@@ -278,13 +271,20 @@ def load_iv_data():
             if df_600 is not None and not df_600.empty:
                 df_600["Source"] = "IV600"
                 # Unir y ordenar columnas
-                order_cols = ["Filename","Date","Time","Module","Module_Category",
-                              "Irradiance_W_m2","Temperature_C","Pmax_W","Vmp_V","Imp_A",
-                              "Isc_A","Voc_V","FF","Efficiency_%","Source"]
-                combined = pd.concat([df_pv, df_600], ignore_index=True, sort=False)
+                order_cols = [
+                    "Filename","Date","Time","Module","Module_Category",
+                    "Irradiance_W_m2","Temperature_C",
+                    "Pmax_W","Vmp_V","Imp_A","Isc_A","Voc_V","FF","Efficiency_%",
+                    # columnas IV600 @1000 W/m² (opcionales)
+                    "Irradiance_Ref_W_m2",
+                    "Pmax_W_Gref","Vmp_V_Gref","Imp_A_Gref","Isc_A_Gref","Voc_V_Gref","FF_Gref","Efficiency_%_Gref",
+                    "Source"
+                ]
+                # al final de load_iv_data(), al construir 'cols':
                 cols = [c for c in order_cols if c in combined.columns] + \
-                       [c for c in combined.columns if c not in order_cols]
+                    [c for c in combined.columns if c not in order_cols]
                 return combined[cols]
+
             else:
                 st.info("IV600: reporte encontrado pero sin datos legibles; se muestra solo PVStand.")
         else:
@@ -415,9 +415,10 @@ def create_interactive_plot(df_analysis):
 iv600_report = _find_iv600_report()
 if iv600_report:
     st.subheader("🟢 Curvas IV Interactivas – IV600 (.xlsx)")
+    show_gref = st.checkbox("Mostrar curvas normalizadas a 1000 W/m²", value=True, key="iv600_show_gref")
+
     curves_iv600 = _load_iv600_curves_from_report(iv600_report)
     if curves_iv600:
-        # Reusar tu mismo layout de 2 paneles (IV/PV)
         fig = make_subplots(
             rows=1, cols=2,
             subplot_titles=("Curvas I-V - IV600", "Curvas P-V - IV600"),
@@ -426,12 +427,27 @@ if iv600_report:
         for c in curves_iv600:
             v, i, p = c["iv_data"][:,0], c["iv_data"][:,1], c["iv_data"][:,2]
             name = c["time"] or c["filename"]
+
+            # crudo
             fig.add_trace(go.Scatter(x=v, y=i, mode="lines", name=name,
                                      line=dict(color=c["color"], width=2)),
                           row=1, col=1)
             fig.add_trace(go.Scatter(x=v, y=p, mode="lines", name=name,
                                      line=dict(color=c["color"], width=2), showlegend=False),
                           row=1, col=2)
+
+            # @1000 W/m² (si existe y habilitado)
+            if show_gref and c.get("iv_data_gref") is not None:
+                vg, ig, pg = c["iv_data_gref"][:,0], c["iv_data_gref"][:,1], c["iv_data_gref"][:,2]
+                fig.add_trace(go.Scatter(x=vg, y=ig, mode="lines",
+                                         name=f"{name} @ 1000 W/m²",
+                                         line=dict(color=c["color"], width=2, dash="dash")),
+                              row=1, col=1)
+                fig.add_trace(go.Scatter(x=vg, y=pg, mode="lines",
+                                         name=f"{name} @ 1000 W/m²",
+                                         line=dict(color=c["color"], width=2, dash="dash"),
+                                         showlegend=False),
+                              row=1, col=2)
 
         fig.update_layout(height=500, showlegend=True, margin=dict(t=60),
                           title_text="IV600 - Curvas IV y PV", title_x=0.5,
@@ -532,10 +548,13 @@ def main():
             ["Todos"] + list(df_analysis['Module_Category'].dropna().unique()) if 'Module_Category' in df_analysis else ["Todos"]
         )
     with col2:
+        sort_candidates = ["Time","Pmax_W","Efficiency_%","Irradiance_W_m2",
+                        "Pmax_W_Gref","Efficiency_%_Gref"]
         sort_by = st.selectbox(
             "Ordenar por:",
-            [c for c in ["Time", "Pmax_W", "Efficiency_%", "Irradiance_W_m2"] if c in df_analysis.columns] or [df_analysis.columns[0]]
+            [c for c in sort_candidates if c in df_analysis.columns] or [df_analysis.columns[0]]
         )
+
 
     filtered_df = df_analysis.copy()
     if module_filter != "Todos" and 'Module_Category' in filtered_df:

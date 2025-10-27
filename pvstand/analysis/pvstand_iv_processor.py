@@ -12,6 +12,7 @@ import glob
 import logging
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,30 @@ except Exception:
 
 # === Utils ===
 import re
+# === Corrección por irradiancia para IV ===
+IRRADIANCE_REF = 1000.0  # W/m^2, puedes hacerlo configurable
+
+def correct_iv_by_irradiance(df_iv: pd.DataFrame,
+                             g_meas: float,
+                             g_ref: float = IRRADIANCE_REF) -> Optional[pd.DataFrame]:
+    """
+    Escala la corriente a G_ref (lineal en irradiancia) y recalcula potencia.
+    V se mantiene (dependencia con G es débil y no lineal).
+    Devuelve un DataFrame con mismas columnas + Resistance_Ohm.
+    """
+    try:
+        if not np.isfinite(g_meas) or g_meas <= 0:
+            return None
+        k = float(g_ref) / float(g_meas)
+
+        dfc = df_iv[['Voltage_V', 'Current_A']].copy()
+        dfc['Current_A'] = dfc['Current_A'] * k
+        dfc['Power_W']   = dfc['Voltage_V'] * dfc['Current_A']
+        dfc['Resistance_Ohm'] = np.where(dfc['Current_A'] != 0,
+                                         dfc['Voltage_V'] / dfc['Current_A'], np.nan)
+        return dfc
+    except Exception:
+        return None
 
 def _to_float_or_none(x):
     if x is None or (isinstance(x, float) and np.isnan(x)):
@@ -310,7 +335,6 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
                     "area": np.nan,
                 }
 
-
                 efficiency = np.nan
                 if np.isfinite(metadata["irradiance"]) and metadata["irradiance"] > 0 and np.isfinite(max_p):
                     if np.isfinite(metadata["area"]) and metadata["area"] > 0:
@@ -322,14 +346,29 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
                     "Efficiency": efficiency, "Avg_Temperature": np.nan
                 }
 
+                # --- aplicar corrección por irradiancia si hay G válida ---
+                g_meas = metadata.get("irradiance", np.nan)
+                df_block_corr = correct_iv_by_irradiance(df_block, g_meas, IRRADIANCE_REF)
+
+                characteristics_corr = None
+                if df_block_corr is not None:
+                    # Para eficiencia a 1000 W/m2, pasa irradiancia de referencia al metadata copia
+                    meta_corr = dict(metadata)
+                    meta_corr['irradiance'] = IRRADIANCE_REF
+                    characteristics_corr = calculate_iv_characteristics(df_block_corr, meta_corr)
+
+                # Guardar ambos (crudo y corregido)
                 processed_curves.append({
                     "filename": f"{os.path.basename(filepath)}_sample{i+1}",
                     "filepath": filepath,
                     "metadata": metadata,
                     "iv_data": df_block,
-                    "characteristics": characteristics
+                    "iv_data_gref": df_block_corr,                 # <--- NUEVO
+                    "characteristics": characteristics,
+                    "characteristics_gref": characteristics_corr   # <--- NUEVO
                 })
                 metadata_list.append(metadata)
+
 
         except Exception as e:
             logger.error(f"Error procesando archivo {filepath}: {e}")
@@ -552,25 +591,46 @@ def generate_iv_analysis(processed_curves, output_dir):
     Genera DataFrame con parámetros clave y guarda CSV.
     """
     logger.info("Generando análisis de curvas IV...")
-    analysis_data = []
+    rows = []
+
     for curve in processed_curves:
-        analysis_data.append({
-            'Filename': curve['filename'],
-            'Date': curve['metadata'].get('date', ''),
-            'Time': curve['metadata'].get('time', ''),
-            'Module': curve['metadata'].get('module', ''),
-            'Module_Category': curve['metadata'].get('module_category', ''),
-            'Irradiance_W_m2': curve['metadata'].get('irradiance', np.nan),
-            'Temperature_C': curve['characteristics'].get('Avg_Temperature', np.nan),
-            'Pmax_W': curve['characteristics'].get('Pmax', np.nan),
-            'Vmp_V': curve['characteristics'].get('Vmp', np.nan),
-            'Imp_A': curve['characteristics'].get('Imp', np.nan),
-            'Isc_A': curve['characteristics'].get('Isc', np.nan),
-            'Voc_V': curve['characteristics'].get('Voc', np.nan),
-            'FF': curve['characteristics'].get('FF', np.nan),
-            'Efficiency_%': curve['characteristics'].get('Efficiency', np.nan)
-        })
-    df_analysis = pd.DataFrame(analysis_data)
+        meta = curve.get('metadata', {})
+        ch   = curve.get('characteristics', {})
+
+        row = {
+            'Filename':        curve.get('filename', ''),
+            'Date':            meta.get('date', ''),
+            'Time':            meta.get('time', ''),
+            'Module':          meta.get('module', ''),
+            'Module_Category': meta.get('module_category', ''),
+            'Irradiance_W_m2': meta.get('irradiance', np.nan),
+            'Temperature_C':   ch.get('Avg_Temperature', np.nan),
+            'Pmax_W':          ch.get('Pmax', np.nan),
+            'Vmp_V':           ch.get('Vmp', np.nan),
+            'Imp_A':           ch.get('Imp', np.nan),
+            'Isc_A':           ch.get('Isc', np.nan),
+            'Voc_V':           ch.get('Voc', np.nan),
+            'FF':              ch.get('FF', np.nan),
+            'Efficiency_%':    ch.get('Efficiency', np.nan),
+        }
+
+        # Si existen características a G_ref (1000 W/m2), añade columnas *_Gref
+        ch_corr = curve.get('characteristics_gref')
+        if ch_corr:
+            row.update({
+                'Irradiance_Ref_W_m2': IRRADIANCE_REF,
+                'Pmax_W_Gref':         ch_corr.get('Pmax', np.nan),
+                'Vmp_V_Gref':          ch_corr.get('Vmp',  np.nan),
+                'Imp_A_Gref':          ch_corr.get('Imp',  np.nan),
+                'Isc_A_Gref':          ch_corr.get('Isc',  np.nan),
+                'Voc_V_Gref':          ch_corr.get('Voc',  np.nan),
+                'FF_Gref':             ch_corr.get('FF',   np.nan),
+                'Efficiency_%_Gref':   ch_corr.get('Efficiency', np.nan),
+            })
+
+        rows.append(row)
+
+    df_analysis = pd.DataFrame(rows)
     os.makedirs(output_dir, exist_ok=True)
     analysis_file = os.path.join(output_dir, "iv_analysis.csv")
     df_analysis.to_csv(analysis_file, index=False)
@@ -609,6 +669,12 @@ def generate_iv_plots(processed_curves, output_dir):
             df_iv = curve['iv_data']
             if df_iv.empty: 
                 continue
+            df_iv = curve['iv_data'][['Voltage_V','Current_A','Power_W']].copy()
+            df_corr = curve.get('iv_data_gref')
+            if df_corr is not None and not df_corr.empty:
+                df_iv['Current_A_1000'] = df_corr['Current_A'].values
+                df_iv['Power_W_1000']   = df_corr['Power_W'].values
+
             md = curve['metadata']
             label = f"{cat} {md.get('time','')} - {md.get('irradiance',np.nan):.0f} W/m²"
             ax.plot(df_iv['Voltage_V'], df_iv['Current_A'],
@@ -751,15 +817,27 @@ def generate_iv_reports(processed_curves, metadata_list, output_dir):
         # Hoja 3+: Curvas IV individuales
         used_names = set()
         for idx, curve in enumerate(processed_curves, start=1):
-            df_iv = curve['iv_data']
-            if df_iv.empty:
-                continue
-            base = Path(curve['filename']).stem  # quita extensión
+            df_iv = curve['iv_data'][['Voltage_V','Current_A','Power_W']].copy()
+            # ← crudo
+
+            # === NUEVO: añadir columnas corregidas a 1000 W/m² si existen ===
+            df_corr = curve.get('iv_data_gref')
+            if df_corr is not None and not df_corr.empty:
+                # conservamos V (misma malla de tensión) pero la exponemos explícita
+                df_iv['Voltage_V_1000'] = df_corr['Voltage_V'].values
+                df_iv['Current_A_1000'] = df_corr['Current_A'].values
+                df_iv['Power_W_1000']   = df_corr['Power_W'].values
+                # (opcional) resistencia con Gref:
+                # df_iv['Resistance_Ohm_1000'] = np.where(df_corr['Current_A']!=0,
+                #                                         df_corr['Voltage_V']/df_corr['Current_A'], np.nan)
+
+            # nombre de hoja seguro/único
+            base = Path(curve['filename']).stem
             sheet_name = (base[:25] + f"_{idx}")[:31]
             while sheet_name in used_names or len(sheet_name) == 0:
-                # evita duplicados/overflow
                 sheet_name = (sheet_name[:28] + "..") if len(sheet_name) >= 30 else (sheet_name + "_")
             used_names.add(sheet_name)
+
             df_iv.to_excel(writer, sheet_name=sheet_name, index=False)
 
     logger.info(f"Reporte consolidado guardado en: {excel_file}")
