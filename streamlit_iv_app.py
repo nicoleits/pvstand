@@ -136,6 +136,115 @@ def _load_iv600_curves_from_report(report_path: str):
 # -----------------------------------------------------------------------------
 # Helpers específicos para IV600 (opcionales y sin romper el arranque)
 # -----------------------------------------------------------------------------
+
+def create_pvstand_grouped_plot_with_corrections():
+    """
+    Grafica PVStand separado por tipo de módulo (Módulo Risen / Minimódulo),
+    sobreponiendo en cada panel las curvas CRUDAS y las CORREGIDAS (STC).
+    """
+    # 1) Cargar datos
+    real_curves = load_real_iv_data()
+    if not real_curves:
+        st.error("No se pudieron cargar los datos reales de PVStand.")
+        return
+    corrected_curves = load_corrected_curves()  # lista de DataFrames con V/I y V_STC/I_STC
+
+    # 2) Mapa base -> categoría a partir de las curvas reales
+    #    base = nombre de archivo sin extensión
+    raw_map_cat = {}     # base -> {category, time}
+    for c in real_curves:
+        base = os.path.splitext(os.path.basename(c['filename']))[0]
+        raw_map_cat[base] = {
+            "category": c['module_category'],   # "Módulo Risen" o "Minimódulo"
+            "time": c.get('time', '')
+        }
+
+    # 3) Prepara las colecciones por categoría
+    categories = ["Módulo Risen", "Minimódulo"]
+    color_by_cat = {"Módulo Risen": "blue", "Minimódulo": "red"}
+
+    # 4) Indexar curvas corregidas por nombre base
+    corr_by_base = {}  # base -> df corregido
+    if corrected_curves:
+        for df in corrected_curves:
+            # df["Archivo"] tiene el nombre del csv corregido (p.ej. "xxx_corregida.csv")
+            base = str(df["Archivo"].iloc[0])
+            base = os.path.splitext(base)[0].replace("_corregida", "")
+            corr_by_base[base] = df
+
+    # 5) Graficar por categoría
+    for module_type in categories:
+        # Curvas reales pertenecientes a esta categoría
+        curves_in_cat = []
+        for c in real_curves:
+            if c['module_category'] == module_type:
+                curves_in_cat.append(c)
+        if not curves_in_cat:
+            st.warning(f"No se encontraron curvas para {module_type}")
+            continue
+
+        st.subheader(f"🔍 {module_type} — Crudo vs Corregido (STC)")
+
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=(f"I–V ({module_type})", f"P–V ({module_type})"),
+            specs=[[{"secondary_y": False}, {"secondary_y": False}]]
+        )
+
+        for c in curves_in_cat:
+            iv = c['iv_data']
+            v_raw, i_raw, p_raw = iv[:,0], iv[:,1], iv[:,2]
+            base = os.path.splitext(os.path.basename(c['filename']))[0]
+            color = color_by_cat.get(module_type, "gray")
+            label = c.get('time') or base
+
+            # CRUDO
+            fig.add_trace(
+                go.Scatter(x=v_raw, y=i_raw, mode='lines',
+                           name=f"{label} (crudo)", line=dict(color=color, width=2)),
+                row=1, col=1
+            )
+            fig.add_trace(
+                go.Scatter(x=v_raw, y=p_raw, mode='lines',
+                           name=f"{label} (crudo)", line=dict(color=color, width=2), showlegend=False),
+                row=1, col=2
+            )
+
+            # CORREGIDO (si existe csv de corrección que matchee el base)
+            df_corr = corr_by_base.get(base)
+            if df_corr is not None and {"V_STC","I_STC"}.issubset(df_corr.columns):
+                v_stc = df_corr["V_STC"].to_numpy()
+                i_stc = df_corr["I_STC"].to_numpy()
+                # si hay P_STC úsala; si no, calcúlala
+                p_stc = (df_corr["P_STC"].to_numpy()
+                         if "P_STC" in df_corr.columns
+                         else (v_stc * i_stc))
+
+                fig.add_trace(
+                    go.Scatter(x=v_stc, y=i_stc, mode='lines',
+                               name=f"{label} (STC)", line=dict(color=color, width=2, dash="dash")),
+                    row=1, col=1
+                )
+                fig.add_trace(
+                    go.Scatter(x=v_stc, y=p_stc, mode='lines',
+                               name=f"{label} (STC)", line=dict(color=color, width=2, dash="dash"),
+                               showlegend=False),
+                    row=1, col=2
+                )
+
+        fig.update_layout(
+            height=520, showlegend=True, margin=dict(t=60, r=20, l=10, b=10),
+            title_text=f"{module_type} — Curvas IV y PV (Crudo vs STC)",
+            title_x=0.5,
+            legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+        )
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=1)
+        fig.update_yaxes(title_text="Corriente [A]", row=1, col=1)
+        fig.update_xaxes(title_text="Voltaje [V]", row=1, col=2)
+        fig.update_yaxes(title_text="Potencia [W]", row=1, col=2)
+
+        st.plotly_chart(fig, use_container_width=True)
+
 def _iv600_out_dir():
     # Mantiene tu convención de outputs
     return os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv600", "iv_curves")
@@ -520,9 +629,10 @@ def main():
     st.markdown("---")
 
     st.header("📊 Curvas IV Interactivas (Datos Reales)")
-    real_curves = load_real_iv_data()
+    #real_curves = load_real_iv_data()
 
-    create_interactive_plot(df_analysis)
+    #create_interactive_plot(df_analysis)
+    create_pvstand_grouped_plot_with_corrections()
 
     st.header("⚙️ Curvas IV Corregidas a STC")
     corrected_curves = load_corrected_curves()
