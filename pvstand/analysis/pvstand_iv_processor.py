@@ -51,8 +51,60 @@ except Exception:
 
 # === Utils ===
 import re
+# === Parámetros (ajústalos si tienes del datasheet) ===
+IRRADIANCE_REF = 1000.0      # W/m^2
+T_REF = 25.0                 # °C
+NOCT_DEFAULT = 45.0          # °C (típico 42–46)
+ALPHA_ISC = 0.0005           # 0.05%/°C -> 0.0005
+BETA_VOC  = -0.0029          # -0.29%/°C -> -0.0029
+IRRADIANCE_SENSOR_BIAS = 1.0 # por si luego detectamos un sesgo constante
+
+def estimate_cell_temp(amb_temp_c: float, g_poa: float, noct: float = NOCT_DEFAULT) -> float:
+    """
+    Estima temperatura de célula con modelo NOCT (sin viento):
+    Tcell = Tamb + (G/800)*(NOCT - 20)
+    """
+    if not np.isfinite(amb_temp_c): amb_temp_c = T_REF
+    if not (np.isfinite(g_poa) and g_poa > 0): g_poa = IRRADIANCE_REF
+    return float(amb_temp_c) + (float(g_poa)/800.0)*float(noct - 20.0)
+
+def correct_iv_by_irradiance_and_temp(df_iv: pd.DataFrame,
+                                      g_meas: float,
+                                      t_amb: float,
+                                      g_ref: float = IRRADIANCE_REF,
+                                      t_ref: float = T_REF,
+                                      alpha_isc: float = ALPHA_ISC,
+                                      beta_v: float = BETA_VOC,
+                                      apply_v_temp: bool = True) -> Optional[pd.DataFrame]:
+    """
+    Corrige la curva a G_ref y T_ref.
+    - I' = I * (g_ref/g_meas) * (1 + alpha*(t_ref - Tcell))
+    - V' = V * (1 + beta*(t_ref - Tcell))   [aprox. global, opcional]
+    P' = V' * I'
+    """
+    try:
+        g_meas = float(g_meas) * IRRADIANCE_SENSOR_BIAS
+        if not (np.isfinite(g_meas) and g_meas > 0): 
+            return None
+
+        t_cell = estimate_cell_temp(t_amb, g_meas)
+        kG = float(g_ref)/g_meas
+        kT_I = 1.0 + float(alpha_isc) * (float(t_ref) - float(t_cell))
+        kT_V = 1.0 + float(beta_v)     * (float(t_ref) - float(t_cell))
+
+        dfc = df_iv[['Voltage_V','Current_A']].copy()
+        # corriente: irradiancia + temperatura
+        dfc['Current_A'] = dfc['Current_A'] * kG * kT_I
+        # voltaje: temperatura (opcionalmente)
+        if apply_v_temp:
+            dfc['Voltage_V'] = dfc['Voltage_V'] * kT_V
+        # potencia
+        dfc['Power_W'] = dfc['Voltage_V'] * dfc['Current_A']
+        return dfc
+    except Exception:
+        return None
+
 # === Corrección por irradiancia para IV ===
-IRRADIANCE_REF = 1000.0  # W/m^2, puedes hacerlo configurable
 
 def correct_iv_by_irradiance(df_iv: pd.DataFrame,
                              g_meas: float,
@@ -346,28 +398,63 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
                     "Efficiency": efficiency, "Avg_Temperature": np.nan
                 }
 
-                # --- aplicar corrección por irradiancia si hay G válida ---
-                g_meas = metadata.get("irradiance", np.nan)
-                df_block_corr = correct_iv_by_irradiance(df_block, g_meas, IRRADIANCE_REF)
+                # ==================== CORRECCIÓN A 1000 W/m² y 25°C ====================
+                # 1) Tomar G de esta curva:
+                #    - Primero desde metadata['irradiance'] (ya lo rellenamos desde "Full"/Analisis_Parametros)
+                #    - (Si quisieras, aquí podrías mapear G por filename/hora desde Analisis_Parametros)
+                g_meas = float(metadata.get("irradiance", float("nan")))
 
+                # 2) Tomar T_amb:
+                #    - Si guardaste ambiente en metadata, úsalo.
+                #    - Si no, intenta con 'Avg_Temperature' de characteristics (si es ambiente).
+                #    - Si nada, usa 25°C.
+                t_amb = metadata.get("ambient_temp_c", float("nan"))
+                if not (isinstance(t_amb, (int,float)) and np.isfinite(t_amb)):
+                    t_amb = characteristics.get('Avg_Temperature', float("nan"))
+                if not (isinstance(t_amb, (int,float)) and np.isfinite(t_amb)):
+                    t_amb = 25.0
+
+                # 3) Aplicar corrección (I por G y T; V por T si apply_v_temp=True)
+                df_block_corr = correct_iv_by_irradiance_and_temp(
+                    df_block,
+                    g_meas=g_meas,
+                    t_amb=t_amb,
+                    g_ref=IRRADIANCE_REF,
+                    t_ref=T_REF,
+                    alpha_isc=ALPHA_ISC,
+                    beta_v=BETA_VOC,
+                    apply_v_temp=True   # pon False si no quieres mover V
+                )
+
+                # 4) Calcular parámetros de la curva corregida (si se pudo corregir)
                 characteristics_corr = None
                 if df_block_corr is not None:
-                    # Para eficiencia a 1000 W/m2, pasa irradiancia de referencia al metadata copia
                     meta_corr = dict(metadata)
                     meta_corr['irradiance'] = IRRADIANCE_REF
+                    meta_corr['estimated_cell_temp_c'] = estimate_cell_temp(t_amb, g_meas)
                     characteristics_corr = calculate_iv_characteristics(df_block_corr, meta_corr)
 
-                # Guardar ambos (crudo y corregido)
+                # 5) Guardar en processed_curves (sustituye tu append original por este)
                 processed_curves.append({
                     "filename": f"{os.path.basename(filepath)}_sample{i+1}",
                     "filepath": filepath,
                     "metadata": metadata,
-                    "iv_data": df_block,
-                    "iv_data_gref": df_block_corr,                 # <--- NUEVO
-                    "characteristics": characteristics,
-                    "characteristics_gref": characteristics_corr   # <--- NUEVO
+                    "iv_data": df_block,                  # crudo
+                    "iv_data_gref": df_block_corr,        # corregido a 1000 W/m² y 25°C
+                    "characteristics": characteristics,   # crudo
+                    "characteristics_gref": characteristics_corr  # corregido
                 })
-                metadata_list.append(metadata)
+
+                # (debug opcional)
+                try:
+                    isc_raw = float(df_block['Current_A'].max())
+                    isc_g   = float(df_block_corr['Current_A'].max()) if df_block_corr is not None else np.nan
+                    logger.info(f"[IV600] time={metadata.get('time')}  G={g_meas:.1f}  Tamb={t_amb:.1f} "
+                                f"Isc_raw={isc_raw:.2f}  Isc_1000_25C={isc_g:.2f}")
+                except Exception:
+                    pass
+                # ======================================================================
+
 
 
         except Exception as e:
