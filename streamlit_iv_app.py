@@ -160,7 +160,7 @@ def create_pvstand_grouped_plot_with_corrections():
         }
 
     # 3) Prepara las colecciones por categoría
-    categories = ["Módulo Risen", "Minimódulo"]
+    categories = sorted({c['module_category'] for c in real_curves}) or ["PVStand"]
     color_by_cat = {"Módulo Risen": "blue", "Minimódulo": "red"}
 
     # 4) Indexar curvas corregidas por nombre base
@@ -446,11 +446,14 @@ def load_real_iv_data():
 
                     if iv_data:
                         time_str = lines[1].split('\t')[1] if len(lines) > 1 else ""
-                        module_category = "risen"; color = "blue"
-                        # if "14:30:00" <= time_str <= "15:05:00":
-                        #     module_category = "Minimódulo"; color = "red"
-                        # else:
-                        #     module_category = "Módulo Risen"; color = "blue"
+                        # NUEVO: sin filtro por hora; intenta inferir por nombre, y si no, usa "PVStand"
+                        base = os.path.basename(filename).lower()
+                        if "mini" in base or "minimod" in base:
+                            module_category, color = "Minimódulo", "red"
+                        elif "risen" in base:
+                            module_category, color = "Módulo Risen", "blue"
+                        else:
+                            module_category, color = "PVStand", "blue"
 
                         real_curves.append({
                             'filename': filename,
