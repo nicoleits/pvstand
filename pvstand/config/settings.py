@@ -24,53 +24,10 @@ PVSTAND_PMAX_SR_OFFSET = 3.0
 PVSTAND_SR_MIN_FILTER_THRESHOLD = 0.7 
 PVSTAND_SR_MAX_FILTER_THRESHOLD = 1.01
 
-# --- Parámetros de Transmitancia PV Glasses (ejemplos) ---
-PV_GLASSES_COLUMN_PATTERN = r"^R_FC\d+_Avg$"
-PV_GLASSES_TIME_COLUMN = "_time"
-PV_GLASSES_FILTER_SOLAR_NOON = True
-PV_GLASSES_SOLAR_NOON_START_HOUR = 11 # Hora UTC de inicio para filtro fijo de mediodía solar (si PV_GLASSES_USE_REAL_SOLAR_NOON es False)
-PV_GLASSES_SOLAR_NOON_END_HOUR = 17   # Hora UTC de fin para filtro fijo de mediodía solar (si PV_GLASSES_USE_REAL_SOLAR_NOON es False)
-PV_GLASSES_USE_REAL_SOLAR_NOON = True
-PV_GLASSES_SOLAR_NOON_INTERVAL_MINUTES = 60
-PV_GLASSES_REMOVE_OUTLIERS_IQR = True
-PV_GLASSES_REF_COL1_NAME = "R_FC1_Avg"
-PV_GLASSES_REF_COL2_NAME = "R_FC2_Avg"
-PV_GLASSES_TIME_FORMAT = "%Y-%m-%d %H:%M:%S%z"
-
 # --- Parámetros de DustIQ ---
 DUSTIQ_SR_FILTER_THRESHOLD = 0
 DUSTIQ_LOCAL_TIMEZONE_STR = "America/Santiago" # o la zona horaria local apropiada
 
-# --- Parámetros de Celdas de Referencia ---
-REFCELLS_SOILED_COLUMNS = ['1RC410(w.m-2)', '1RC412(w.m-2)', '1RC414(w.m-2)', '1RC416(w.m-2)']
-REFCELLS_CLEAN_COLUMNS = ['1RC409(w.m-2)', '1RC411(w.m-2)', '1RC413(w.m-2)', '1RC415(w.m-2)']
-REFCELLS_NORMALIZE_FLAG = True
-REFCELLS_NORMALIZE_REF_DATE_STR = '2024-07-26' # Fecha de referencia para normalización
-# No hay SR_MIN/MAX_FILTER_THRESHOLD explícito en el notebook para ref cells, se usa normalización.
-
-# --- Parámetros de Soiling Kit ---
-# Basado en la función analizar_datos_soiling_kit del notebook
-SOILING_KIT_LOCAL_TIMEZONE_STR = "America/Santiago"
-SOILING_KIT_TIME_COLUMN = "timestamp"
-SOILING_KIT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S%z"
-
-SOILING_KIT_ANALYSIS_START_DATE_STR = "2024-07-23" # Fecha de inicio específica para Soiling Kit
-# SOILING_KIT_ANALYSIS_END_DATE_STR = None # Descomentar y definir si se necesita una fecha de fin específica
-
-SOILING_KIT_ISC_SOILED_COL = 'Isc(e)' # Corriente del módulo experimental/sucio
-SOILING_KIT_ISC_REF_COL = 'Isc(p)'   # Corriente de la celda de referencia/prístina (o piranómetro)
-SOILING_KIT_TEMP_SOILED_COL = 'Te(C)' # Temperatura del módulo expuesto
-SOILING_KIT_TEMP_REF_COL = 'Tp(C)'    # Temperatura del módulo prístino/referencia
-
-SOILING_KIT_ALPHA_ISC_CORR = 0.0004 # Coeficiente de temperatura para corrección de Isc
-SOILING_KIT_TEMP_REF_C = 25.0     # Temperatura de referencia para corrección de Isc (Celsius)
-
-SOILING_KIT_FILTER_START_TIME = '06:00' # Hora UTC de inicio para filtro general de datos
-SOILING_KIT_FILTER_END_TIME = '18:00'   # Hora UTC de fin para filtro general de datos
-
-SOILING_KIT_SR_LOWER_THRESHOLD = 90.0 # Umbral inferior para filtrar SR (ej. SR > 90.0%)
-                                      # El notebook usa (SR_Ratio > sr_filter_threshold)
-                                      # Nota: SR en el notebook es Ref/Soiled. Si mantenemos Soiled/Ref, este filtro podría ser < X.
 
 # --- Otros parámetros globales que puedan surgir ---
 SAVE_FIGURES = True
@@ -92,21 +49,6 @@ DUSTIQ_LOCAL_TIMEZONE_STR = "America/Santiago" # o la zona horaria local apropia
 DUSTIQ_SR_FILTER_THRESHOLD = 0 # Ejemplo, ajustar según necesidad
 # ... (otras configuraciones específicas de DustIQ)
 
-# --- Settings para PV Glasses Analyzer ---
-PV_GLASSES_TIME_COLUMN = "_time"  # Nombre de la columna de tiempo en el CSV crudo
-PV_GLASSES_TIME_COLUMN_PROCESSED = "_time_processed_utc_naive" # Nombre para la columna de tiempo procesada internamente
-PV_GLASSES_TIME_FORMAT = "%Y-%m-%d %H:%M:%S%z" # NUEVO: Formato de la columna de tiempo en el CSV
-PV_GLASSES_COLUMN_PATTERN = r"^R_FC\d+_Avg$"  # Patrón regex para columnas de datos (ej. R_FC1_Avg)
-PV_GLASSES_REF_COL1_NAME = "R_FC1_Avg" # Columna 1 para cálculo de REF (promedio)
-PV_GLASSES_REF_COL2_NAME = "R_FC2_Avg" # Columna 2 para cálculo de REF (promedio)
-PV_GLASSES_FILTER_SOLAR_NOON = True # Activar/desactivar filtro de mediodía solar
-PV_GLASSES_USE_REAL_SOLAR_NOON = True # Intentar usar MedioDiaSolar real si True, sino usa horas fijas
-PV_GLASSES_SOLAR_NOON_START_HOUR = 11 # Hora UTC de inicio para filtro fijo de mediodía solar (si PV_GLASSES_USE_REAL_SOLAR_NOON es False)
-PV_GLASSES_SOLAR_NOON_END_HOUR = 17   # Hora UTC de fin para filtro fijo de mediodía solar (si PV_GLASSES_USE_REAL_SOLAR_NOON es False)
-PV_GLASSES_SOLAR_NOON_INTERVAL_MINUTES = 60 # Intervalo en minutos alrededor del mediodía solar real
-PV_GLASSES_REMOVE_OUTLIERS_IQR = True # Activar/desactivar eliminación de outliers por IQR
-# ... (otras configuraciones específicas de PV Glasses)
-
 # --- Settings para PV Stand Analyzer ---
 PVSTAND_LOCAL_TIMEZONE_STR = "America/Santiago"
 PVSTAND_IV_DATA_TIME_COLUMN = "_time" # Nombre de la columna de tiempo en los datos IV
@@ -126,7 +68,7 @@ PVSTAND_STC_GHI = 1000
 PVSTAND_STC_TEMP = 25
 # Nuevos parámetros basados en el notebook
 PVSTAND_ANALYSIS_START_DATE_STR = '2024-08-01' # Fecha de inicio del análisis para PVStand
-PVSTAND_ANALYSIS_END_DATE_STR = '2025-08-26'   # Fecha de fin del análisis para PVStand
+PVSTAND_ANALYSIS_END_DATE_STR = '2025-11-07'   # Fecha de fin del análisis para PVStand
 PVSTAND_RESAMPLE_FREQ_MINUTES = 1             # Frecuencia de remuestreo en minutos para PVStand
 PVSTAND_GRAPH_QUANTILE = 0.25                 # Cuantil para agregaciones en gráficos de PVStand
 # Tomados de la sección superior de PVStand para consistencia, ya que la función del notebook los usa
