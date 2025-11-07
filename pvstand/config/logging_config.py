@@ -3,7 +3,7 @@
 import logging
 import sys
 
-def setup_logger(name='soiling_analysis_logger', level=logging.WARNING):
+def setup_logger(name='soiling_analysis_logger', level=logging.INFO):
     """
     Configura y retorna un logger.
     """

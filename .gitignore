@@ -1,0 +1,14 @@
+venv/
+.venv/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+*.webp
+*.svg
+*.pdf
+*.docx
+*.doc

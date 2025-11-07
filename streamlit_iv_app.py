@@ -446,10 +446,11 @@ def load_real_iv_data():
 
                     if iv_data:
                         time_str = lines[1].split('\t')[1] if len(lines) > 1 else ""
-                        if "14:30:00" <= time_str <= "15:05:00":
-                            module_category = "Minimódulo"; color = "red"
-                        else:
-                            module_category = "Módulo Risen"; color = "blue"
+                        module_category = "risen"; color = "blue"
+                        # if "14:30:00" <= time_str <= "15:05:00":
+                        #     module_category = "Minimódulo"; color = "red"
+                        # else:
+                        #     module_category = "Módulo Risen"; color = "blue"
 
                         real_curves.append({
                             'filename': filename,
