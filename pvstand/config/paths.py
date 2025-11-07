@@ -25,7 +25,7 @@ PROCESSED_DATA_DIR = BASE_OUTPUT_CSV_DIR
 # Nombres de archivos
 PVSTAND_IV_DATA_FILENAME = "raw_pvstand_iv_data.csv"
 PVSTAND_TEMP_DATA_FILENAME = 'data_temp.csv'  # Generado por notebook
-IV600_RAW_DATA_FILENAME = "iv_risen.xlsx"
+IV600_RAW_DATA_FILENAME = "iv600_risen.xlsx"
 
 # Rutas completas de archivos de entrada
 PVSTAND_IV_DATA_FILE = os.path.join(BASE_INPUT_DIR, PVSTAND_IV_DATA_FILENAME)
