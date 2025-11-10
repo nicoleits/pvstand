@@ -36,6 +36,20 @@ def _find_iv600_report():
             return p
     return None
 
+# --- Candidatos para el Excel de curvas STC del PVStand ---
+PVSTAND_REPORT_CANDIDATES = [
+    os.path.join(project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves", "iv_curves_report.xlsx"),
+    os.path.join(project_root, "pvstand", "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves", "iv_curves_report.xlsx"),
+    "/home/nicole/atamos_pvstand/pvstand/pvstand/datos_procesados_analisis_integrado_py/iv_curves/iv_curves_report.xlsx",
+]
+
+def _find_pvstand_report():
+    for p in PVSTAND_REPORT_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def _load_iv600_analysis_from_report(report_path: str):
     xls = pd.ExcelFile(report_path)
     # localizar hoja Analisis_Parametros (como ya lo tienes)
@@ -163,23 +177,28 @@ def create_pvstand_grouped_plot_with_corrections(allowed_bases=None):
     categories = sorted({c['module_category'] for c in real_curves}) or ["PVStand"]
     color_by_cat = {"Módulo Risen": "blue", "Minimódulo": "red"}
 
-    # 4) Indexar curvas corregidas por nombre base (sin filtrar aquí)
+    # 4) Indexar curvas corregidas por nombre base (minúsculas)
     corr_by_base = {}
     if corrected_curves:
         for df in corrected_curves:
             base = str(df["Archivo"].iloc[0])
-            base = os.path.splitext(base)[0].replace("_corregida", "").lower()
+            base = os.path.splitext(base)[0].replace("_corregida","").lower()
             corr_by_base[base] = df
 
-    def _get_corr_for_base(base_key: str):
-        """Devuelve el DataFrame corregido cuya 'base' coincida (exacta o por contención)."""
-        bk = base_key.lower()
-        if bk in corr_by_base:
-            return corr_by_base[bk]
-        for k in corr_by_base.keys():
-            if bk in k or k in bk:
-                return corr_by_base[k]
-        return None
+        # helper para coincidencia laxa
+        def _get_corr_for_base(base_key: str):
+            bk = base_key.lower()
+            if bk in corr_by_base:
+                return corr_by_base[bk]
+            for k in corr_by_base.keys():
+                if bk in k or k in bk:
+                    return corr_by_base[k]
+            return None
+
+        # Debug opcional
+        st.caption(f"🔎 STC disponibles: {list(corr_by_base.keys())[:6]}{' …' if len(corr_by_base)>6 else ''}")
+    else:
+        st.warning("No se cargaron curvas STC (ni CSV ni Excel).")
 
 
     # 5) Graficar por categoría
@@ -308,51 +327,48 @@ def _try_process_iv600():
 # -----------------------------------------------------------------------------
 # Tu código original (con mínimos cambios para combinar IV600)
 # -----------------------------------------------------------------------------
+
 def load_corrected_curves():
-    """Carga las curvas corregidas a STC (desde CSV y/o reportes Excel)."""
+    """Carga curvas corregidas a STC desde CSV y/o desde el Excel de PVStand."""
     corrected_dir = os.path.join(project_root, "pvstand", "resultados_correccion")
     pattern = os.path.join(corrected_dir, "*_corregida.csv")
     corrected_files = glob.glob(pattern)
 
     curves = []
 
-    # --- 1) CSVs tradicionales *_corregida.csv ---
+    # 1) CSVs tradicionales *_corregida.csv (si existen)
     for filepath in corrected_files:
         try:
             df = pd.read_csv(filepath)
-            # Normalizar nombres si vinieran como Voltage_V_1000 / Current_A_1000
+            # Normalizar nombres si vinieran como *_1000
             rename_map = {
                 "Voltage_V": "V", "Current_A": "I", "Power_W": "P",
                 "Voltage_V_1000": "V_STC", "Current_A_1000": "I_STC", "Power_W_1000": "P_STC",
             }
             df = df.rename(columns=rename_map)
-            # Si no hay P o P_STC, calcúlalas
-            if "P" not in df.columns and {"V", "I"}.issubset(df.columns):
+            if "P" not in df.columns and {"V","I"}.issubset(df.columns):
                 df["P"] = df["V"] * df["I"]
-            if "P_STC" not in df.columns and {"V_STC", "I_STC"}.issubset(df.columns):
+            if "P_STC" not in df.columns and {"V_STC","I_STC"}.issubset(df.columns):
                 df["P_STC"] = df["V_STC"] * df["I_STC"]
-
             df["Archivo"] = os.path.basename(filepath)
             curves.append(df)
         except Exception:
             st.warning(f"Error leyendo archivo corregido: {filepath}")
             continue
 
-    # --- 2) Reporte Excel de PVStand (si existe) ---
-    pv_report = os.path.join(
-        project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves", "iv_curves_report.xlsx"
-    )
-    if os.path.exists(pv_report):
+    # 2) Excel de PVStand (iv_curves_report.xlsx)
+    pv_report = _find_pvstand_report()
+    if pv_report:
+        st.caption(f"PVStand STC: usando Excel en: {pv_report}")
         try:
             xls = pd.ExcelFile(pv_report)
             for s in xls.sheet_names:
                 sl = s.strip().lower()
-                if sl in {"metadatos", "analisis_parametros"}:
+                if sl in {"metadatos","analisis_parametros"}:
                     continue
                 df_sheet = xls.parse(s)
-                # Requiere raw y stc en el sheet
-                need_raw = {"Voltage_V", "Current_A"}
-                need_stc = {"Voltage_V_1000", "Current_A_1000"}
+                need_raw = {"Voltage_V","Current_A"}
+                need_stc = {"Voltage_V_1000","Current_A_1000"}
                 if need_raw.issubset(df_sheet.columns) and need_stc.issubset(df_sheet.columns):
                     out = pd.DataFrame({
                         "V": df_sheet["Voltage_V"],
@@ -364,13 +380,15 @@ def load_corrected_curves():
                         "P_STC": (df_sheet["Power_W_1000"] if "Power_W_1000" in df_sheet.columns
                                   else df_sheet["Voltage_V_1000"] * df_sheet["Current_A_1000"]),
                     })
-                    # Para que el matching por "base" funcione con tu plotting actual:
-                    out["Archivo"] = f"{s}_corregida.csv"
+                    out["Archivo"] = f"{s}_corregida.csv"   # etiqueta consistente con tu plotting
                     curves.append(out)
         except Exception as e:
-            st.warning(f"PVStand: no se pudo leer Excel de curvas STC ({e}).")
+            st.warning(f"PVStand: no pude leer el Excel de curvas STC ({e}).")
+    else:
+        st.info("PVStand: no encontré iv_curves_report.xlsx en rutas candidatas.")
 
     return curves
+
 
 def _load_pvstand_analysis():
     """Carga (y si falta, procesa) el análisis PVStand (tu lógica original)."""
