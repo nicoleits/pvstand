@@ -163,14 +163,23 @@ def create_pvstand_grouped_plot_with_corrections(allowed_bases=None):
     categories = sorted({c['module_category'] for c in real_curves}) or ["PVStand"]
     color_by_cat = {"Módulo Risen": "blue", "Minimódulo": "red"}
 
-    # 4) Indexar curvas corregidas por nombre base
+    # 4) Indexar curvas corregidas por nombre base (sin filtrar aquí)
     corr_by_base = {}
     if corrected_curves:
         for df in corrected_curves:
             base = str(df["Archivo"].iloc[0])
-            base = os.path.splitext(base)[0].replace("_corregida", "")
-            if (not allowed_bases) or (base in allowed_bases):
-                corr_by_base[base] = df
+            base = os.path.splitext(base)[0].replace("_corregida", "").lower()
+            corr_by_base[base] = df
+
+    def _get_corr_for_base(base_key: str):
+        """Devuelve el DataFrame corregido cuya 'base' coincida (exacta o por contención)."""
+        bk = base_key.lower()
+        if bk in corr_by_base:
+            return corr_by_base[bk]
+        for k in corr_by_base.keys():
+            if bk in k or k in bk:
+                return corr_by_base[k]
+        return None
 
 
     # 5) Graficar por categoría
@@ -219,7 +228,7 @@ def create_pvstand_grouped_plot_with_corrections(allowed_bases=None):
             )
 
             # CORREGIDO (si existe csv de corrección que matchee el base)
-            df_corr = corr_by_base.get(base)
+            df_corr = _get_corr_for_base(base)
             if df_corr is not None and {"V_STC","I_STC"}.issubset(df_corr.columns):
                 v_stc = df_corr["V_STC"].to_numpy()
                 i_stc = df_corr["I_STC"].to_numpy()
@@ -717,9 +726,12 @@ def main():
         fig_corr = go.Figure()
         for df in corrected_curves:
             name = df["Archivo"].iloc[0].removesuffix("_corregida.csv")
-            # Aplicar filtro por base si viene de la fecha
-            if 'allowed_bases' in locals() and allowed_bases and name not in allowed_bases:
-                continue
+            # Filtro por fecha usando allowed_bases, pero tolerante a diferencias de nombres
+            if 'allowed_bases' in locals() and allowed_bases:
+                nm = name.lower()
+                ok = any( (b.lower() in nm) or (nm in b.lower()) for b in allowed_bases )
+                if not ok:
+                    continue
 
             fig_corr.add_trace(go.Scatter(x=df["V"], y=df["I"], mode='lines',
                                           name=f"{name} - Original", line=dict(dash="solid", width=2)))
