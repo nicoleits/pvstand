@@ -137,7 +137,7 @@ def _load_iv600_curves_from_report(report_path: str):
 # Helpers específicos para IV600 (opcionales y sin romper el arranque)
 # -----------------------------------------------------------------------------
 
-def create_pvstand_grouped_plot_with_corrections():
+def create_pvstand_grouped_plot_with_corrections(allowed_bases=None):
     """
     Grafica PVStand separado por tipo de módulo (Módulo Risen / Minimódulo),
     sobreponiendo en cada panel las curvas CRUDAS y las CORREGIDAS (STC).
@@ -164,13 +164,14 @@ def create_pvstand_grouped_plot_with_corrections():
     color_by_cat = {"Módulo Risen": "blue", "Minimódulo": "red"}
 
     # 4) Indexar curvas corregidas por nombre base
-    corr_by_base = {}  # base -> df corregido
+    corr_by_base = {}
     if corrected_curves:
         for df in corrected_curves:
-            # df["Archivo"] tiene el nombre del csv corregido (p.ej. "xxx_corregida.csv")
             base = str(df["Archivo"].iloc[0])
             base = os.path.splitext(base)[0].replace("_corregida", "")
-            corr_by_base[base] = df
+            if (not allowed_bases) or (base in allowed_bases):
+                corr_by_base[base] = df
+
 
     # 5) Graficar por categoría
     for module_type in categories:
@@ -179,6 +180,13 @@ def create_pvstand_grouped_plot_with_corrections():
         for c in real_curves:
             if c['module_category'] == module_type:
                 curves_in_cat.append(c)
+        # Si hay filtro por base (según la fecha), aplícalo
+        if allowed_bases:
+            curves_in_cat = [
+                c for c in curves_in_cat
+                if os.path.splitext(os.path.basename(c['filename']))[0] in allowed_bases
+            ]
+
         if not curves_in_cat:
             st.warning(f"No se encontraron curvas para {module_type}")
             continue
@@ -659,6 +667,24 @@ def main():
     with st.spinner("Cargando datos de curvas IV..."):
         df_analysis = load_iv_data()
 
+    # --- FILTRO POR FECHA: solo 04/11 (4 de noviembre del año actual) ---
+    from datetime import date as _date
+    target_date = pd.to_datetime("2025-11-04").date()  # ajusta si quieres otra fecha
+
+    if "Date" in df_analysis.columns:
+        df_analysis["Date"] = pd.to_datetime(df_analysis["Date"], errors="coerce").dt.date
+        df_analysis = df_analysis[df_analysis["Date"] == target_date]
+    else:
+        st.warning("No existe columna 'Date' en el análisis; no se pudo filtrar por fecha.")
+
+    if df_analysis.empty:
+        st.warning("No hay registros para el 04/11.")
+    # Conjunto de bases (nombre del archivo sin extensión) para filtrar curvas y STC
+    allowed_bases = set(
+        df_analysis["Filename"].dropna().apply(lambda x: os.path.splitext(os.path.basename(x))[0])
+    ) if "Filename" in df_analysis.columns else set()
+
+
     if df_analysis is None:
         st.error("No se pudieron cargar los datos")
         return
@@ -683,7 +709,7 @@ def main():
     #real_curves = load_real_iv_data()
 
     #create_interactive_plot(df_analysis)
-    create_pvstand_grouped_plot_with_corrections()
+    create_pvstand_grouped_plot_with_corrections(allowed_bases=allowed_bases)
 
     st.header("⚙️ Curvas IV Corregidas a STC")
     corrected_curves = load_corrected_curves()
@@ -691,6 +717,10 @@ def main():
         fig_corr = go.Figure()
         for df in corrected_curves:
             name = df["Archivo"].iloc[0].removesuffix("_corregida.csv")
+            # Aplicar filtro por base si viene de la fecha
+            if 'allowed_bases' in locals() and allowed_bases and name not in allowed_bases:
+                continue
+
             fig_corr.add_trace(go.Scatter(x=df["V"], y=df["I"], mode='lines',
                                           name=f"{name} - Original", line=dict(dash="solid", width=2)))
             fig_corr.add_trace(go.Scatter(x=df["V_STC"], y=df["I_STC"], mode='lines',
