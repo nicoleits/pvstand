@@ -59,6 +59,79 @@ ALPHA_ISC = 0.0005           # 0.05%/°C -> 0.0005
 BETA_VOC  = -0.0029          # -0.29%/°C -> -0.0029
 IRRADIANCE_SENSOR_BIAS = 1.0 # por si luego detectamos un sesgo constante
 
+def _get_full_modtemps_from_xls(xls: pd.ExcelFile):
+    """
+    Devuelve dict con Tmod {'D6': float|None, 'D18': ..., 'D30': ..., 'D42': ...}
+    leyendo la hoja 'Full'.
+    """
+    sheet = _get_sheet_case_insensitive(xls, "Full")
+    if not sheet:
+        return {"D6": None, "D18": None, "D30": None, "D42": None}
+
+    df = xls.parse(sheet, header=None)
+    def cell(r,c):
+        try: return df.iat[r,c]
+        except Exception: return None
+
+    d6  = _to_float_or_none(cell(5, 3))   # D6  -> (fila 5, col 3) 0-index
+    d18 = _to_float_or_none(cell(17,3))   # D18 -> (17,3)
+    d30 = _to_float_or_none(cell(29,3))   # D30 -> (29,3)
+    d42 = _to_float_or_none(cell(41,3))   # D42 -> (41,3)
+
+    return {"D6": d6, "D18": d18, "D30": d30, "D42": d42}
+
+def _pick_temp_for_time(time_str: str, temps: dict):
+    try:
+        hh = int(str(time_str).split(":")[0])
+    except Exception:
+        hh = None
+    # <11→D6, 11–14→D18, 14–16→D30, >=16→D42; fallback al último disponible
+    if hh is not None:
+        prefer = ("D6" if hh < 11 else "D18" if hh < 14 else "D30" if hh < 16 else "D42",)
+    else:
+        prefer = ()
+    for k in prefer + ("D42","D30","D18","D6"):
+        t = temps.get(k)
+        if t is not None:
+            return t
+    return None
+
+def _load_pvstand_temp_series(temp_csv_path: str | None = None) -> Optional[pd.DataFrame]:
+    try:
+        if temp_csv_path is None:
+            temp_csv_path = getattr(paths, "PVSTAND_TEMP_CSV", "data_temp.csv")
+        df = pd.read_csv(temp_csv_path)
+        # columnas esperadas
+        ts_col = "timestamp"
+        cand_cols = [c for c in df.columns if c != ts_col]
+        # promedio entre ambas sondas (ignorando NaN)
+        df["Tmod_avg_C"] = pd.to_numeric(df[cand_cols], errors="coerce").mean(axis=1)
+        df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
+        df = df.dropna(subset=[ts_col]).sort_values(ts_col).reset_index(drop=True)
+        return df[[ts_col, "Tmod_avg_C"]]
+    except Exception as e:
+        logger.warning(f"No se pudo leer PVSTAND_TEMP_CSV: {e}")
+        return None
+
+def _lookup_nearest_temp(temp_df: Optional[pd.DataFrame],
+                         ts: pd.Timestamp,
+                         window_minutes: int = 5) -> float | None:
+    if temp_df is None or temp_df.empty or not isinstance(ts, pd.Timestamp):
+        return None
+    i = np.searchsorted(temp_df["timestamp"].values, ts.to_datetime64())
+    candidates = []
+    if i > 0: candidates.append(i-1)
+    if i < len(temp_df): candidates.append(i)
+    best = None; best_dt = None
+    for idx in candidates:
+        dt = abs((pd.Timestamp(temp_df.loc[idx, "timestamp"]) - ts).total_seconds())
+        if best_dt is None or dt < best_dt:
+            best_dt = dt; best = float(temp_df.loc[idx, "Tmod_avg_C"])
+    if best_dt is not None and best_dt <= window_minutes * 60:
+        return best
+    return None
+
+
 def estimate_cell_temp(amb_temp_c: float, g_poa: float, noct: float = NOCT_DEFAULT) -> float:
     """
     Estima temperatura de célula con modelo NOCT (sin viento):
@@ -75,19 +148,23 @@ def correct_iv_by_irradiance_and_temp(df_iv: pd.DataFrame,
                                       t_ref: float = T_REF,
                                       alpha_isc: float = ALPHA_ISC,
                                       beta_v: float = BETA_VOC,
-                                      apply_v_temp: bool = True) -> Optional[pd.DataFrame]:
+                                      apply_v_temp: bool = True,
+                                      t_cell_meas: float | None = None) -> Optional[pd.DataFrame]:
     """
     Corrige la curva a G_ref y T_ref.
     - I' = I * (g_ref/g_meas) * (1 + alpha*(t_ref - Tcell))
-    - V' = V * (1 + beta*(t_ref - Tcell))   [aprox. global, opcional]
-    P' = V' * I'
+    - V' = V * (1 + beta*(t_ref - Tcell)) 
     """
     try:
         g_meas = float(g_meas) * IRRADIANCE_SENSOR_BIAS
         if not (np.isfinite(g_meas) and g_meas > 0): 
             return None
 
-        t_cell = estimate_cell_temp(t_amb, g_meas)
+        if isinstance(t_cell_meas, (int, float)) and np.isfinite(t_cell_meas):
+            t_cell = float(t_cell_meas)
+        else:
+            t_cell = estimate_cell_temp(t_amb, g_meas)
+
         kG = float(g_ref)/g_meas
         kT_I = 1.0 + float(alpha_isc) * (float(t_ref) - float(t_cell))
         kT_V = 1.0 + float(beta_v)     * (float(t_ref) - float(t_cell))
@@ -240,12 +317,97 @@ def process_pvstand_iv_files(data_dir=None, output_dir=None):
     processed_curves = []
     metadata_list = []
 
+    temp_series = _load_pvstand_temp_series()
+
     for file_path in sorted(iv_files):
         logger.info(f"Procesando: {os.path.basename(file_path)}")
         result = parse_single_iv_file(file_path)
         if result is not None:
+            md = result["metadata"]
+            ch = result.get("characteristics", {})
+
+            # (A) Inyectar T° de módulo medida desde data_temp.csv (±5 min)
+            date_str = str(md.get('date','')).strip()
+            time_str = str(md.get('time','')).strip()
+            try:
+                ts = pd.to_datetime(f"{date_str} {time_str}", errors="coerce")
+            except Exception:
+                ts = pd.NaT
+
+            t_meas = _lookup_nearest_temp(temp_series, ts) if pd.notna(ts) else None
+            if isinstance(t_meas, (int,float)) and np.isfinite(t_meas):
+                md["module_temp_c_meas"] = float(t_meas)
+                # Recalcular características para que 'Avg_Temperature' refleje la T° medida
+                result["characteristics"] = calculate_iv_characteristics(result["iv_data"], md)
+
+            # === CORRECCIÓN A STC (1000 W/m², 25 °C) PARA PVSTAND ===
+            df_raw = result['iv_data']
+            md     = result['metadata']
+
+            # Irradiancia medida (prioriza 'irradiance' del metadata)
+            g_meas = _to_float_or_none(md.get('irradiance'))
+            if g_meas is None:
+                for key in ('Irradiance_Wm2', 'G', 'Irradiance', 'G_meas'):
+                    v = _to_float_or_none(md.get(key))
+                    if v is not None:
+                        g_meas = v
+                        break
+
+
+            # Si no vino en metadata, intenta como columna en el propio DataFrame
+            if g_meas is None and 'Irradiance_Wm2' in df_raw.columns:
+                try:
+                    g_meas = float(pd.to_numeric(df_raw['Irradiance_Wm2'], errors='coerce').mean())
+                except Exception:
+                    g_meas = None
+
+            # Temperatura ambiente razonable (para el caso en que NO haya t_cell_meas)
+            t_amb = None
+            for key in ('Ambient_Temperature', 't_amb', 'Tamb_C'):
+                v = md.get(key, np.nan)
+                if isinstance(v, (int, float)) and np.isfinite(v):
+                    t_amb = float(v)
+                    break
+            if t_amb is None:
+                t_amb = 25.0  # fallback suave
+
+            # T° de módulo medida (inyectada antes desde data_temp.csv)
+            t_cell_meas = md.get('module_temp_c_meas', np.nan)
+            if not (isinstance(t_cell_meas, (int, float)) and np.isfinite(t_cell_meas)):
+                t_cell_meas = None  # forzamos estimación NOCT si no hay medida
+
+            # Solo corregimos si hay irradiancia válida > 0
+            if isinstance(g_meas, (int, float)) and np.isfinite(g_meas) and g_meas > 0:
+                df_gref = correct_iv_by_irradiance_and_temp(
+                    df_raw,
+                    g_meas=g_meas,
+                    t_amb=t_amb,
+                    g_ref=IRRADIANCE_REF,
+                    t_ref=T_REF,
+                    alpha_isc=ALPHA_ISC,
+                    beta_v=BETA_VOC,
+                    apply_v_temp=True,
+                    t_cell_meas=t_cell_meas
+                )
+                if df_gref is not None and not df_gref.empty:
+                    # Guarda la curva corregida (el resto del pipeline ya la recoge)
+                    result['iv_data_gref'] = df_gref
+
+                    # (opcional) deja traza de qué usamos para corregir
+                    md['STC_Correction'] = {
+                        'g_meas_Wm2': g_meas,
+                        't_amb_C': t_amb,
+                        't_cell_used_C': (t_cell_meas if t_cell_meas is not None else
+                                        estimate_cell_temp(t_amb, g_meas))
+                    }
+
+                    # Calcula parámetros de la curva corregida a STC
+                    ch_corr = calculate_iv_characteristics(df_gref, md.copy())
+                    result['characteristics_gref'] = ch_corr
+
             processed_curves.append(result)
-            metadata_list.append(result['metadata'])
+            metadata_list.append(md)
+
 
     if not processed_curves:
         logger.error("No se pudieron procesar archivos de datos IV (.txt)")
@@ -304,7 +466,9 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
 
             # NUEVO: leer triplete de irradiancias desde 'Full'
             full_cands = _get_full_triplet_from_xls(xls)
-            logger.info(f"[IV600] Full D4/D20/D36 leídas: {full_cands}")
+            full_tmods = _get_full_modtemps_from_xls(xls)
+            logger.info(f"[IV600] Full D6/D18/D30/D42 Tmod: {full_tmods}")
+
 
             samples_sheet = _get_sheet_case_insensitive(xls, "samples")
             if not samples_sheet:
@@ -364,75 +528,60 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
                 ff = (max_p / (isc * voc)) if np.isfinite(isc) and np.isfinite(voc) and isc > 0 and voc > 0 else np.nan
 
                 # metadata
+
+                # --- timestamp desde 'min' ---
                 date_str, time_str = None, None
                 if timestamp and len(timestamp.split()) >= 2:
                     date_str, time_str = timestamp.split()[0], timestamp.split()[1]
 
-                # --- decidir irradiancia final ---
-                irr_min = float(irr) if np.isfinite(irr) else np.nan  # lo que vino de 'min'
+                # --- irradiancia final (min → Full por hora si falta/ inválida) ---
+                irr_min = float(irr) if np.isfinite(irr) else np.nan
                 irr_final = irr_min
-
-                # si 'min' no trajo un valor válido, usar 'Full' según la hora
                 if not _is_valid_irr(irr_final):
                     irr_from_full = _pick_irradiance_for_time(time_str or "", full_cands)
                     if irr_from_full is not None:
                         irr_final = float(irr_from_full)
 
+                # --- T° módulo medida desde Full por hora ---
+                tmod_meas = _pick_temp_for_time(time_str or "", full_tmods)
+
+                # --- metadata y características (crudo) ---
                 metadata = {
                     "date": date_str or datetime.today().strftime("%Y-%m-%d"),
                     "time": time_str or f"{9+i:02d}:00:00",
                     "module": f"IV600_sample_{i+1}",
                     "module_category": "IV600",
-                    "irradiance": irr_final,   # ← YA QUEDA INYECTADA LA IRRADIANCIA CORRECTA
+                    "irradiance": irr_final,
                     "area": np.nan,
                 }
-
-                efficiency = np.nan
-                if np.isfinite(metadata["irradiance"]) and metadata["irradiance"] > 0 and np.isfinite(max_p):
-                    if np.isfinite(metadata["area"]) and metadata["area"] > 0:
-                        efficiency = (max_p / (metadata["area"] * metadata["irradiance"])) * 100
-
                 characteristics = {
                     "Pmax": max_p, "Vmp": vmp, "Imp": imp,
                     "Isc": isc, "Voc": voc, "FF": ff,
-                    "Efficiency": efficiency, "Avg_Temperature": np.nan
+                    "Efficiency": np.nan, "Avg_Temperature": np.nan
                 }
+                if isinstance(tmod_meas, (int,float)) and np.isfinite(tmod_meas):
+                    metadata["module_temp_c_meas"] = float(tmod_meas)
+                    characteristics["Avg_Temperature"] = float(tmod_meas)
 
-                # ==================== CORRECCIÓN A 1000 W/m² y 25°C ====================
-                # 1) Tomar G de esta curva:
-                #    - Primero desde metadata['irradiance'] (ya lo rellenamos desde "Full"/Analisis_Parametros)
-                #    - (Si quisieras, aquí podrías mapear G por filename/hora desde Analisis_Parametros)
-                g_meas = float(metadata.get("irradiance", float("nan")))
-
-                # 2) Tomar T_amb:
-                #    - Si guardaste ambiente en metadata, úsalo.
-                #    - Si no, intenta con 'Avg_Temperature' de characteristics (si es ambiente).
-                #    - Si nada, usa 25°C.
+                # --- corrección a STC usando G=irr_final y T_cell medida (si existe) ---
                 t_amb = metadata.get("ambient_temp_c", float("nan"))
-                if not (isinstance(t_amb, (int,float)) and np.isfinite(t_amb)):
-                    t_amb = characteristics.get('Avg_Temperature', float("nan"))
-                if not (isinstance(t_amb, (int,float)) and np.isfinite(t_amb)):
+                if not (isinstance(t_amb,(int,float)) and np.isfinite(t_amb)):
                     t_amb = 25.0
 
-                # 3) Aplicar corrección (I por G y T; V por T si apply_v_temp=True)
                 df_block_corr = correct_iv_by_irradiance_and_temp(
                     df_block,
-                    g_meas=g_meas,
+                    g_meas=irr_final,
                     t_amb=t_amb,
                     g_ref=IRRADIANCE_REF,
                     t_ref=T_REF,
                     alpha_isc=ALPHA_ISC,
                     beta_v=BETA_VOC,
-                    apply_v_temp=True   # pon False si no quieres mover V
+                    apply_v_temp=True,
+                    t_cell_meas=metadata.get("module_temp_c_meas")
                 )
-
-                # 4) Calcular parámetros de la curva corregida (si se pudo corregir)
-                characteristics_corr = None
-                if df_block_corr is not None:
-                    meta_corr = dict(metadata)
-                    meta_corr['irradiance'] = IRRADIANCE_REF
-                    meta_corr['estimated_cell_temp_c'] = estimate_cell_temp(t_amb, g_meas)
-                    characteristics_corr = calculate_iv_characteristics(df_block_corr, meta_corr)
+                characteristics_corr = (calculate_iv_characteristics(
+                    df_block_corr, {**metadata, "irradiance": IRRADIANCE_REF}
+                ) if df_block_corr is not None else None)
 
                 # 5) Guardar en processed_curves (sustituye tu append original por este)
                 processed_curves.append({
@@ -442,14 +591,15 @@ def process_IV600_iv_files(data_dir=None, output_dir=None):
                     "iv_data": df_block,                  # crudo
                     "iv_data_gref": df_block_corr,        # corregido a 1000 W/m² y 25°C
                     "characteristics": characteristics,   # crudo
-                    "characteristics_gref": characteristics_corr  # corregido
+                    "characteristics_gref": (calculate_iv_characteristics(df_block_corr, {**metadata, "irradiance": IRRADIANCE_REF}) if df_block_corr is not None else None)  # corregido
                 })
 
+                metadata_list.append(metadata)
                 # (debug opcional)
                 try:
                     isc_raw = float(df_block['Current_A'].max())
                     isc_g   = float(df_block_corr['Current_A'].max()) if df_block_corr is not None else np.nan
-                    logger.info(f"[IV600] time={metadata.get('time')}  G={g_meas:.1f}  Tamb={t_amb:.1f} "
+                    logger.info(f"[IV600] time={metadata.get('time')}  G={irr_final:.1f}  Tamb={t_amb:.1f} "
                                 f"Isc_raw={isc_raw:.2f}  Isc_1000_25C={isc_g:.2f}")
                 except Exception:
                     pass
@@ -655,17 +805,24 @@ def calculate_iv_characteristics(df_iv, metadata):
             efficiency = np.nan
         characteristics['Efficiency'] = efficiency
 
-        temp_015 = metadata.get('temp_015_2017', np.nan)
-        temp_019 = metadata.get('temp_019_2017', np.nan)
-        if np.isfinite(temp_015) and np.isfinite(temp_019):
-            characteristics['Avg_Temperature'] = float((temp_015 + temp_019) / 2.0)
-        elif np.isfinite(temp_015):
-            characteristics['Avg_Temperature'] = float(temp_015)
-        elif np.isfinite(temp_019):
-            characteristics['Avg_Temperature'] = float(temp_019)
+        # Preferir T° de modulo medida si viene en metadata
+        tmod_meas = metadata.get('module_temp_c_meas', np.nan)
+        if isinstance(tmod_meas, (int,float)) and np.isfinite(tmod_meas):
+            t_mod_used = float(tmod_meas)
         else:
-            characteristics['Avg_Temperature'] = np.nan
+            temp_015 = metadata.get('temp_015_2017', np.nan)
+            temp_019 = metadata.get('temp_019_2017', np.nan)
+        
+            if np.isfinite(temp_015) and np.isfinite(temp_019):
+                t_mod_used = float((temp_015 + temp_019) / 2.0)
+            elif np.isfinite(temp_015):
+                t_mod_used = float(temp_015)
+            elif np.isfinite(temp_019):
+                t_mod_used = float(temp_019)
+            else:
+                t_mod_used = np.nan
 
+        characteristics['Avg_Temperature'] = t_mod_used
     except Exception as e:
         logger.warning(f"Error calculando características: {e}")
     return characteristics
