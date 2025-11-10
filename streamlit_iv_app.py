@@ -292,20 +292,67 @@ def _try_process_iv600():
 # Tu código original (con mínimos cambios para combinar IV600)
 # -----------------------------------------------------------------------------
 def load_corrected_curves():
-    """Carga las curvas corregidas a STC"""
+    """Carga las curvas corregidas a STC (desde CSV y/o reportes Excel)."""
     corrected_dir = os.path.join(project_root, "pvstand", "resultados_correccion")
     pattern = os.path.join(corrected_dir, "*_corregida.csv")
     corrected_files = glob.glob(pattern)
 
     curves = []
+
+    # --- 1) CSVs tradicionales *_corregida.csv ---
     for filepath in corrected_files:
         try:
             df = pd.read_csv(filepath)
+            # Normalizar nombres si vinieran como Voltage_V_1000 / Current_A_1000
+            rename_map = {
+                "Voltage_V": "V", "Current_A": "I", "Power_W": "P",
+                "Voltage_V_1000": "V_STC", "Current_A_1000": "I_STC", "Power_W_1000": "P_STC",
+            }
+            df = df.rename(columns=rename_map)
+            # Si no hay P o P_STC, calcúlalas
+            if "P" not in df.columns and {"V", "I"}.issubset(df.columns):
+                df["P"] = df["V"] * df["I"]
+            if "P_STC" not in df.columns and {"V_STC", "I_STC"}.issubset(df.columns):
+                df["P_STC"] = df["V_STC"] * df["I_STC"]
+
             df["Archivo"] = os.path.basename(filepath)
             curves.append(df)
         except Exception:
             st.warning(f"Error leyendo archivo corregido: {filepath}")
             continue
+
+    # --- 2) Reporte Excel de PVStand (si existe) ---
+    pv_report = os.path.join(
+        project_root, "pvstand", "datos_procesados_analisis_integrado_py", "iv_curves", "iv_curves_report.xlsx"
+    )
+    if os.path.exists(pv_report):
+        try:
+            xls = pd.ExcelFile(pv_report)
+            for s in xls.sheet_names:
+                sl = s.strip().lower()
+                if sl in {"metadatos", "analisis_parametros"}:
+                    continue
+                df_sheet = xls.parse(s)
+                # Requiere raw y stc en el sheet
+                need_raw = {"Voltage_V", "Current_A"}
+                need_stc = {"Voltage_V_1000", "Current_A_1000"}
+                if need_raw.issubset(df_sheet.columns) and need_stc.issubset(df_sheet.columns):
+                    out = pd.DataFrame({
+                        "V": df_sheet["Voltage_V"],
+                        "I": df_sheet["Current_A"],
+                        "P": (df_sheet["Power_W"] if "Power_W" in df_sheet.columns
+                              else df_sheet["Voltage_V"] * df_sheet["Current_A"]),
+                        "V_STC": df_sheet["Voltage_V_1000"],
+                        "I_STC": df_sheet["Current_A_1000"],
+                        "P_STC": (df_sheet["Power_W_1000"] if "Power_W_1000" in df_sheet.columns
+                                  else df_sheet["Voltage_V_1000"] * df_sheet["Current_A_1000"]),
+                    })
+                    # Para que el matching por "base" funcione con tu plotting actual:
+                    out["Archivo"] = f"{s}_corregida.csv"
+                    curves.append(out)
+        except Exception as e:
+            st.warning(f"PVStand: no se pudo leer Excel de curvas STC ({e}).")
+
     return curves
 
 def _load_pvstand_analysis():
